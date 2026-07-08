@@ -3,7 +3,7 @@
 [![CI](https://github.com/SEU_USUARIO/BRElections.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/SEU_USUARIO/BRElections.jl/actions/workflows/CI.yml)
 
 Interface em Julia para os **dados públicos do Tribunal Superior Eleitoral (TSE)**,
-inspirada no pacote R [`BRElections`](https://github.com/silvadenisson/BRElections),
+inspirada no pacote R [`BRElections`](https://github.com/silvadenisson/electionsBR),
 mas seguindo as convenções do ecossistema Julia (DataFrames.jl, CSV.jl, Scratch.jl).
 
 O pacote usa exclusivamente os arquivos abertos publicados em
@@ -28,7 +28,7 @@ autorização é necessária.
 ## Instalação
 
 ```julia
-pkg> add https://github.com/SEU_USUARIO/BRElections.jl
+pkg> add https://github.com/dantebertuzzi/BRElections.jl
 ```
 
 ## Uso rápido
