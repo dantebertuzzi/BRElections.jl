@@ -1,0 +1,6 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+BRElections = "5eec50b8-494f-41b4-8c08-b509cd8ec277"
+
+[compat]
+Documenter = "1"
