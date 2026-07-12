@@ -1,112 +1,115 @@
 # BRElections.jl
 
-[![CI](https://github.com/SEU_USUARIO/BRElections.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/SEU_USUARIO/BRElections.jl/actions/workflows/CI.yml)
+[![CI](https://github.com/dantebertuzzi/BRElections.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/dantebertuzzi/BRElections.jl/actions/workflows/CI.yml)
 
-Interface em Julia para os **dados públicos do Tribunal Superior Eleitoral (TSE)**,
-inspirada no pacote R [`electionsBR`](https://github.com/silvadenisson/electionsBR),
-mas seguindo as convenções do ecossistema Julia (DataFrames.jl, CSV.jl, Scratch.jl).
+<img src="logo.png" alt="BRElections logo" width="200" align="right">
 
-O pacote usa exclusivamente os arquivos abertos publicados em
-`https://cdn.tse.jus.br/estatistica/sead/odsele/` — nenhuma API privada ou
-autorização é necessária.
+Julia interface for **public electoral data from Brazil's TSE (Tribunal Superior
+Eleitoral)**, inspired by the R package
+[`electionsBR`](https://github.com/silvadenisson/electionsBR), but following
+Julia ecosystem conventions (DataFrames.jl, CSV.jl, Scratch.jl).
 
-## Funcionalidades
+The package uses only the open data files published at
+`https://cdn.tse.jus.br/estatistica/sead/odsele/` — no private API or
+authorisation is required.
 
-- Download automático dos ZIPs do TSE, com novas tentativas e escrita atômica;
-- Cache local portável (Windows/Linux/macOS) via Scratch.jl, configurável por
-  `BRElections_CACHE` ou `set_cache_dir!`;
-- Descoberta dos arquivos publicados por ano (`available_files`);
-- Descompactação dos ZIPs com transcodificação ISO-8859-1 → UTF-8 na extração;
-- Importação eficiente de CSVs grandes (CSV.jl, multithread, leitura em *chunks*);
-- Conversão automática de tipos: datas `dd/mm/yyyy` → `Date`, sentinelas
-  `#NULO#`/`#NE#` → `missing`, identificadores (`NR_CPF_*`, `NR_TITULO_*`)
-  preservados como `String` (zeros à esquerda intactos);
-- Padronização de nomes de colunas (minúsculas, opcional);
-- Filtros de **colunas** e de **linhas** aplicados durante a importação;
-- Testes automatizados (offline por padrão; testes de rede opcionais).
+## Features
 
-## Instalação
+- Automatic download of TSE ZIPs, with retry logic and atomic writes;
+- Portable local cache (Windows/Linux/macOS) via Scratch.jl, configurable through
+  the `BRElections_CACHE` environment variable or `set_cache_dir!`;
+- Discovery of published files by year (`available_files`);
+- ZIP decompression with on-the-fly ISO-8859-1 → UTF-8 transcoding;
+- Efficient import of large CSVs (CSV.jl, multithreaded, chunk-based reading);
+- Automatic type conversion: `dd/mm/yyyy` dates → `Date`, sentinels
+  `#NULO#`/`#NE#` → `missing`, identifier columns (`NR_CPF_*`, `NR_TITULO_*`)
+  preserved as `String` (leading zeros intact);
+- Column name normalisation (lowercase, optional);
+- **Column** and **row** filters applied during import to minimise memory usage;
+- Automated test suite (offline by default; optional network tests).
+
+## Installation
 
 ```julia
 pkg> add https://github.com/dantebertuzzi/BRElections.jl
 ```
 
-## Uso rápido
+## Quick start
 
 ```julia
 using BRElections
 
-# Datasets disponíveis
+# Available datasets
 available_datasets()
 
-# O que o TSE já publicou para 2022?
+# What has the TSE already published for 2022?
 available_files(2022)
 
-# Candidaturas de 2022 (Brasil inteiro)
+# Candidates in 2022 (whole country)
 cand = candidates(2022)
 
-# Votação nominal em PE, 1º turno, só as colunas de interesse.
-# O filtro é aplicado durante a leitura (chunks) — só as linhas
-# aprovadas ocupam memória.
+# Nominal votes in PE, 1st round, only the columns of interest.
+# The filter is applied during reading (chunks) — only matching rows
+# are kept in memory.
 pe = candidate_votes(2022; uf = "PE",
         columns = ["NR_TURNO", "NM_MUNICIPIO", "NM_URNA_CANDIDATO",
                    "SG_PARTIDO", "QT_VOTOS_NOMINAIS"],
         filter  = row -> row.NR_TURNO == 1)
 
-# Votação por seção eleitoral (o TSE publica um ZIP por UF)
+# Votes by electoral section (the TSE publishes one ZIP per state)
 sec = section_votes(2022; uf = "PE")
 
-# Interface genérica equivalente
+# Generic interface equivalent to the above
 df = elections(2020; type = :assets, uf = "PE")
 ```
 
-### Datasets suportados
+### Supported datasets
 
-| `type`                   | Repositório TSE            | Descrição                                   |
-|--------------------------|----------------------------|---------------------------------------------|
-| `:candidates`            | `consulta_cand`            | Candidaturas registradas                     |
-| `:candidate_votes`       | `votacao_candidato_munzona`| Votação nominal por candidato/município/zona |
-| `:party_votes`           | `votacao_partido_munzona`  | Votação por partido/município/zona           |
-| `:vote_details`          | `detalhe_votacao_munzona`  | Detalhe da apuração por município/zona       |
-| `:section_votes`†        | `votacao_secao`            | Votação por seção eleitoral                  |
-| `:section_vote_details`† | `detalhe_votacao_secao`    | Detalhe da apuração por seção                |
-| `:assets`                | `bem_candidato`            | Bens declarados pelos candidatos             |
-| `:coalitions`            | `consulta_legendas`        | Coligações e legendas                        |
-| `:vacancies`             | `consulta_vagas`           | Vagas em disputa                             |
-| `:voter_profile`         | `perfil_eleitorado`        | Perfil do eleitorado                         |
+| `type`                   | TSE repository             | Description                                  |
+|--------------------------|----------------------------|----------------------------------------------|
+| `:candidates`            | `consulta_cand`            | Registered candidates                         |
+| `:candidate_votes`       | `votacao_candidato_munzona`| Nominal votes by candidate/municipality/zone  |
+| `:party_votes`           | `votacao_partido_munzona`  | Votes by party/municipality/zone              |
+| `:vote_details`          | `detalhe_votacao_munzona`  | Vote count details by municipality/zone       |
+| `:section_votes`†        | `votacao_secao`            | Votes by electoral section                    |
+| `:section_vote_details`† | `detalhe_votacao_secao`    | Vote count details by section                 |
+| `:assets`                | `bem_candidato`            | Candidate asset declarations                  |
+| `:coalitions`            | `consulta_legendas`        | Coalitions and party legends                  |
+| `:vacancies`             | `consulta_vagas`           | Number of seats in dispute                    |
+| `:voter_profile`         | `perfil_eleitorado`        | Electorate profile                            |
 
-† Particionados por UF no TSE — o argumento `uf` é obrigatório.
+† Partitioned by state on the TSE CDN — the `uf` argument is mandatory.
 
 ### Cache
 
 ```julia
-cache_dir()          # onde os ZIPs/CSVs ficam
-set_cache_dir!(dir)  # redefinir em tempo de execução
-clear_cache!()       # limpar tudo
+cache_dir()          # where ZIPs and CSVs are stored
+set_cache_dir!(dir)  # change cache directory at runtime
+clear_cache!()       # wipe all cached data
 ```
 
-A variável de ambiente `BRElections_CACHE` define o diretório no carregamento
-do pacote.
+The `BRElections_CACHE` environment variable sets the directory at package load
+time.
 
-## Testes
+## Tests
 
 ```julia
-pkg> test BRElections                     # suíte offline (fixtures sintéticas)
+pkg> test BRElections                     # offline suite (synthetic fixtures)
 ```
 
 ```bash
-BRElections_TEST_NETWORK=true julia --project -e 'using Pkg; Pkg.test()'  # inclui smoke tests contra o CDN do TSE
+BRElections_TEST_NETWORK=true julia --project -e 'using Pkg; Pkg.test()'  # includes smoke tests against the TSE CDN
 ```
 
-## Escopo e limitações
+## Scope and limitations
 
-- Cobre eleições de 1998 em diante, no formato atual do CDN (arquivos com
-  cabeçalho). Anos muito antigos podem ter esquemas divergentes.
-- Prestação de contas de campanha (`prestacao_de_contas`) usa outra estrutura
-  de URLs no TSE e está no roadmap.
-- Os dicionários de variáveis oficiais acompanham cada ZIP (`leiame.pdf`) e
-  permanecem no cache para consulta.
+- Covers elections from 1998 onward, in the current CDN format (files with
+  headers). Very old years may have divergent schemas.
+- Campaign finance reports (`prestacao_de_contas`) use a different URL structure
+  on the TSE CDN and are on the roadmap.
+- Official variable dictionaries come with each ZIP (`leiame.pdf`) and remain
+  in the cache for reference.
 
-## Licença
+## License
 
-MIT. Os dados pertencem ao TSE e são públicos.
+MIT. The data belongs to the TSE and is publicly available.
