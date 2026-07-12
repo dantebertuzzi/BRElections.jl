@@ -165,6 +165,180 @@ end
         set_cache_dir!(old)
     end
 
+    @testset "Detecção de arquivos tabulares" begin
+        @test BRElections._is_tabular("data.csv")
+        @test BRElections._is_tabular("data.TXT")
+        @test BRElections._is_tabular("path/to/data.CSV")
+        @test !BRElections._is_tabular("leiame.csv")
+        @test !BRElections._is_tabular("leiame.txt")
+        @test !BRElections._is_tabular("LEIAME.CSV")
+        @test !BRElections._is_tabular("leiame_consulta_cand_2022.txt")
+        @test !BRElections._is_tabular("documento.pdf")
+    end
+
+    @testset "select_csvs — arquivo _BRASIL" begin
+        dir = mktempdir()
+        zippath = make_fixture_zip(dir)  # contém _BRASIL.csv
+        csvs = BRElections.extract_csvs(zippath)
+        sel = BRElections.select_csvs(csvs)
+        @test length(sel) == 1
+        @test occursin("_BRASIL", only(sel))
+    end
+
+    @testset "download_file (cache)" begin
+        dir = mktempdir()
+        dest = joinpath(dir, "test.zip")
+        write(dest, "conteúdo de teste")
+        result = BRElections.download_file("http://url-falsa.tse/test.zip", dest; verbose = false)
+        @test result == dest
+        @test read(result, String) == "conteúdo de teste"  # não sobrescrito
+    end
+
+    @testset "download_file (force + sem rede)" begin
+        dir = mktempdir()
+        dest = joinpath(dir, "test.zip")
+        write(dest, "cache")
+        @test_throws Exception BRElections.download_file(
+            "http://url-falsa.tse/test.zip", dest;
+            force = true, retries = 1, verbose = false)
+    end
+
+    @testset "read_tse_csv — arquivo inexistente" begin
+        @test_throws ArgumentError read_tse_csv("/diretorio/inexistente/arquivo.csv")
+    end
+
+    @testset "read_tse_csvs — único arquivo" begin
+        dir = mktempdir()
+        zippath = make_fixture_zip(dir)
+        csvs = BRElections.extract_csvs(zippath)
+        df = BRElections.read_tse_csvs(csvs[1:1])
+        @test nrow(df) == 4
+        @test "nr_turno" in names(df)
+    end
+
+    @testset "available_datasets — estrutura" begin
+        ds = available_datasets()
+        @test names(ds) == ["dataset", "tse_dir", "by_uf", "description"]
+        @test eltype(ds.dataset) == Symbol
+        @test eltype(ds.tse_dir) == String
+        @test eltype(ds.by_uf) == Bool
+        @test eltype(ds.description) == String
+        @test :section_votes in ds.dataset
+        datasets_by_uf = Set(ds.dataset[ds.by_uf])
+        @test datasets_by_uf == Set([:section_votes, :section_vote_details])
+        @test length(datasets_by_uf) == 2
+    end
+
+    @testset "elections — integração offline (dataset nacional)" begin
+        old_cache = cache_dir()
+        cache = mktempdir()
+        set_cache_dir!(cache)
+
+        url = dataset_url(:candidates, 2022)
+        subdir = joinpath(cache, "consulta_cand")
+        mkpath(subdir)
+        zippath_dest = joinpath(subdir, basename(url))
+        fixture_dir = mktempdir()
+        fixture_zip = make_fixture_zip(fixture_dir)
+        cp(fixture_zip, zippath_dest)
+        BRElections.extract_csvs(zippath_dest)
+
+        df = elections(2022; type = :candidates, verbose = false)
+        @test nrow(df) == 4
+        @test "dt_geracao" in names(df)
+        @test "nr_cpf_candidato" in names(df)
+        @test ismissing(df.nr_cpf_candidato[2])   # #NULO#
+        @test df.dt_geracao[1] == Date(2022, 10, 1)
+
+        set_cache_dir!(old_cache)
+    end
+
+    @testset "elections — integração offline (dataset por UF)" begin
+        old_cache = cache_dir()
+        cache = mktempdir()
+        set_cache_dir!(cache)
+
+        url = dataset_url(:section_votes, 2022; uf = "PE")
+        subdir = joinpath(cache, "votacao_secao")
+        mkpath(subdir)
+        zippath_dest = joinpath(subdir, basename(url))
+        fixture_dir = mktempdir()
+        fixture_zip = make_fixture_zip(fixture_dir; per_uf = true)
+        cp(fixture_zip, zippath_dest)
+        BRElections.extract_csvs(zippath_dest)
+
+        df = elections(2022; type = :section_votes, uf = "PE", verbose = false)
+        @test nrow(df) == 4
+        @test "sg_uf" in names(df)
+
+        set_cache_dir!(old_cache)
+    end
+
+    @testset "elections — erros de validação" begin
+        @test_throws ArgumentError elections(2021)                     # ano ímpar
+        @test_throws ArgumentError elections(2022; type = :foo)        # dataset inválido
+        @test_throws ArgumentError elections(2022; type = :section_votes)  # UF obrigatória
+    end
+
+    @testset "Funções de conveniência" begin
+        for func in (candidates, candidate_votes, party_votes, vote_details,
+                     assets, coalitions, vacancies, voter_profile)
+            @test func isa Function
+        end
+
+        # section_votes e section_vote_details também existem
+        @test section_votes isa Function
+        @test section_vote_details isa Function
+    end
+
+    @testset "elections — colunas e filtro via API" begin
+        old_cache = cache_dir()
+        cache = mktempdir()
+        set_cache_dir!(cache)
+
+        url = dataset_url(:candidates, 2022)
+        subdir = joinpath(cache, "consulta_cand")
+        mkpath(subdir)
+        zippath_dest = joinpath(subdir, basename(url))
+        fixture_dir = mktempdir()
+        fixture_zip = make_fixture_zip(fixture_dir)
+        cp(fixture_zip, zippath_dest)
+        BRElections.extract_csvs(zippath_dest)
+
+        df = elections(2022; type = :candidates, columns = [:nr_turno, "SG_UF"], verbose = false)
+        @test names(df) == ["nr_turno", "sg_uf"]
+        @test nrow(df) == 4
+
+        df_f = elections(2022; type = :candidates,
+                         filter = row -> row.NR_TURNO == 1 && row.SG_UF == "PE",
+                         verbose = false)
+        @test nrow(df_f) == 2
+        @test all(==(1), df_f.nr_turno)
+
+        set_cache_dir!(old_cache)
+    end
+
+    @testset "elections — normalize_names=false via API" begin
+        old_cache = cache_dir()
+        cache = mktempdir()
+        set_cache_dir!(cache)
+
+        url = dataset_url(:candidates, 2022)
+        subdir = joinpath(cache, "consulta_cand")
+        mkpath(subdir)
+        zippath_dest = joinpath(subdir, basename(url))
+        fixture_dir = mktempdir()
+        fixture_zip = make_fixture_zip(fixture_dir)
+        cp(fixture_zip, zippath_dest)
+        BRElections.extract_csvs(zippath_dest)
+
+        df = elections(2022; type = :candidates, normalize_names = false, verbose = false)
+        @test "NR_TURNO" in names(df)
+        @test "DT_GERACAO" in names(df)
+
+        set_cache_dir!(old_cache)
+    end
+
     # -----------------------------------------------------------------------
     # Testes de rede (opcionais): BRElections_TEST_NETWORK=true julia --project -e 'using Pkg; Pkg.test()'
     # -----------------------------------------------------------------------

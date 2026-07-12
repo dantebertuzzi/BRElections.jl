@@ -72,16 +72,33 @@ function read_tse_csv(path::AbstractString;
     df = if filter === nothing
         CSV.read(path, DataFrame; ntasks, kw...)
     else
-        parts = DataFrame[]
-        for chunk in CSV.Chunks(path; ntasks = max(ntasks, 2), kw...)
-            part = Base.filter(filter, DataFrame(chunk))
-            nrow(part) > 0 && push!(parts, part)
-        end
-        isempty(parts) ? _empty_like(path, kw) : reduce(vcat, parts; cols = :union)
+        _read_tse_csv_with_filter(path, filter, ntasks, kw)
     end
 
     normalize_names && rename!(lowercase, df)
     df
+end
+
+# Leitura com filtro: tenta CSV.Chunks para evitar carregar tudo em memória;
+# cai para leitura completa + filter se o arquivo for pequeno demais.
+function _read_tse_csv_with_filter(path, filter, ntasks, kw)
+    parts = DataFrame[]
+    chunk_ntasks = clamp(ntasks, 2, 4)
+    try
+        for chunk in CSV.Chunks(path; ntasks = chunk_ntasks, kw...)
+            part = Base.filter(filter, DataFrame(chunk))
+            nrow(part) > 0 && push!(parts, part)
+        end
+    catch e
+        if e isa ArgumentError
+            @warn "Falha ao dividir arquivo em chunks; lendo inteiro e filtrando em memória." path
+            df_full = CSV.read(path, DataFrame; ntasks = 1, kw...)
+            parts = [Base.filter(filter, df_full)]
+        else
+            rethrow(e)
+        end
+    end
+    isempty(parts) ? _empty_like(path, kw) : reduce(vcat, parts; cols = :union)
 end
 
 # DataFrame vazio com o esquema do arquivo (usado quando o filtro elimina tudo).

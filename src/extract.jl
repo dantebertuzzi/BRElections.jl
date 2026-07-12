@@ -60,7 +60,7 @@ end
 function select_csvs(paths::Vector{String}; uf::Union{Nothing,AbstractString} = nothing)
     if uf !== nothing
         u = validate_uf(uf)
-        suffix = "_$(u).csv"
+        suffix = uppercase("_$(u).csv")
         sel = [p for p in paths if endswith(uppercase(basename(p)), suffix)]
         isempty(sel) && throw(ArgumentError(
             "Nenhum arquivo para a UF $u neste dataset. Arquivos disponíveis: " *
