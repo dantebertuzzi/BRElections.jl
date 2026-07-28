@@ -12,4 +12,4 @@ makedocs(
     checkdocs = :exports,
 )
 
-deploydocs(repo = "github.com/SEU_USUARIO/BRElections.jl.git")
+deploydocs(repo = "github.com/dantebertuzzi/BRElections.jl.git")

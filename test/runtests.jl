@@ -55,6 +55,7 @@ end
         @test_throws ArgumentError BRElections.validate_type(:foo)
 
         @test BRElections.validate_uf("pe") == "PE"
+        @test BRElections.validate_uf(" pe ") == "PE"  # espaços e caixa
         @test_throws ArgumentError BRElections.validate_uf("XX")
     end
 
@@ -65,6 +66,8 @@ end
               "https://cdn.tse.jus.br/estatistica/sead/odsele/votacao_secao/votacao_secao_2020_PE.zip"
         @test_throws ArgumentError dataset_url(:section_votes, 2020)            # UF obrigatória
         @test_throws ArgumentError dataset_url(:section_votes, 2020; uf = "BR") # sem arquivo nacional
+        # dataset nacional ignora `uf` (não particionado)
+        @test dataset_url(:candidates, 2022; uf = "PE") == dataset_url(:candidates, 2022)
     end
 
     @testset "available_datasets" begin
@@ -95,6 +98,44 @@ end
         mtime1 = mtime(only(csvs))
         csvs2 = BRElections.extract_csvs(zippath)
         @test mtime(only(csvs2)) == mtime1
+    end
+
+    @testset "extract_csvs — não extrai o que não será usado (uf)" begin
+        # Alguns datasets nacionais do TSE trazem, no mesmo ZIP, um arquivo
+        # por UF *e* um "_BRASIL.csv" com todos os estados concatenados
+        # (potencialmente GBs maior que qualquer UF isolada). Pedir uma UF
+        # não deve tocar nos demais arquivos nem no _BRASIL.
+        dir = mktempdir()
+        zippath = joinpath(dir, "nacional_2022.zip")
+        w = ZipFile.Writer(zippath)
+        for (name, rows) in (
+                ("consulta_teste_2022_PE.csv", [r for r in ROWS if occursin(";PE;", r)]),
+                ("consulta_teste_2022_BA.csv", [r for r in ROWS if occursin(";BA;", r)]),
+                ("consulta_teste_2022_BRASIL.csv", ROWS),
+            )
+            f = ZipFile.addfile(w, name)
+            write(f, encode(join(vcat(HEADER, rows), "\r\n") * "\r\n", enc"ISO-8859-1"))
+        end
+        close(w)
+
+        csvs_pe = BRElections.extract_csvs(zippath; uf = "PE")
+        @test length(csvs_pe) == 1
+        @test endswith(only(csvs_pe), "_PE.csv")
+        @test !any(p -> endswith(p, "_BA.csv"), csvs_pe)
+        @test !any(p -> endswith(p, "_BRASIL.csv"), csvs_pe)
+
+        # UF inexistente neste ZIP: erro, e nada é extraído
+        dir2 = mktempdir()
+        @test_throws ArgumentError BRElections.extract_csvs(zippath; uf = "SP", dest = dir2)
+        @test isempty(readdir(dir2))
+
+        # sem uf: prefere o _BRASIL, não extrai os arquivos por UF ao lado
+        dir3 = mktempdir()
+        csvs_all = BRElections.extract_csvs(zippath; dest = dir3)
+        @test length(csvs_all) == 1
+        @test endswith(only(csvs_all), "_BRASIL.csv")
+        @test !isfile(joinpath(dir3, "consulta_teste_2022_PE.csv"))
+        @test !isfile(joinpath(dir3, "consulta_teste_2022_BA.csv"))
     end
 
     @testset "Seleção de arquivos (nacional vs UF)" begin
@@ -337,6 +378,97 @@ end
         @test "DT_GERACAO" in names(df)
 
         set_cache_dir!(old_cache)
+    end
+
+    @testset "_force_string — prefixos de identificadores" begin
+        @test BRElections._force_string("NR_CPF_CANDIDATO")
+        @test BRElections._force_string("nr_titulo_eleitor")        # insensível a caixa
+        @test BRElections._force_string("NR_PROCESSO_TRT")
+        @test BRElections._force_string("NR_PROTOCOLO_CANDIDATURA")
+        @test !BRElections._force_string("QT_VOTOS_NOMINAIS")
+        @test !BRElections._force_string("NR_TURNO")
+    end
+
+    @testset "_column_selector — seleção insensível a caixa" begin
+        sel = BRElections._column_selector(["NR_Turno", :sg_uf])
+        @test sel(1, "nr_turno")
+        @test sel(2, "SG_UF")
+        @test !sel(3, "outra_coluna")
+    end
+
+    @testset "Preservação de identificadores (NR_TITULO, NR_PROCESSO, NR_PROTOCOLO)" begin
+        dir = mktempdir()
+        path = joinpath(dir, "ids.csv")
+        write(path, "NR_TITULO_ELEITOR;NR_PROCESSO;NR_PROTOCOLO;QT_VOTOS\n001234567890;0001234;00098;10\n")
+        df = read_tse_csv(path)
+        @test df.nr_titulo_eleitor[1] == "001234567890"  # zeros à esquerda preservados
+        @test df.nr_processo[1] == "0001234"
+        @test df.nr_protocolo[1] == "00098"
+        @test eltype(df.qt_votos) <: Integer
+    end
+
+    @testset "read_tse_csv — ntasks" begin
+        dir = mktempdir()
+        zippath = make_fixture_zip(dir)
+        csv = only(BRElections.extract_csvs(zippath))
+        df1 = read_tse_csv(csv; ntasks = 1)
+        df4 = read_tse_csv(csv; ntasks = 4)
+        @test nrow(df1) == nrow(df4) == 4
+        @test names(df1) == names(df4)
+    end
+
+    @testset "read_tse_csvs — união de colunas quando schemas diferem" begin
+        dir = mktempdir()
+        path1 = joinpath(dir, "a.csv")
+        path2 = joinpath(dir, "b.csv")
+        write(path1, "NR_TURNO;SG_UF\n1;PE\n")
+        write(path2, "NR_TURNO;SG_UF;NR_CPF_CANDIDATO\n2;BA;01234567890\n")
+        df = BRElections.read_tse_csvs([path1, path2])
+        @test nrow(df) == 2
+        @test "nr_cpf_candidato" in names(df)
+        @test ismissing(df.nr_cpf_candidato[1])
+        @test df.nr_cpf_candidato[2] == "01234567890"
+    end
+
+    @testset "select_csvs — uf insensível a caixa" begin
+        dir = mktempdir()
+        zippath = make_fixture_zip(dir; per_uf = true)
+        csvs = BRElections.extract_csvs(zippath)
+        pe = BRElections.select_csvs(csvs; uf = "pe")
+        @test length(pe) == 1 && endswith(only(pe), "_PE.csv")
+    end
+
+    @testset "extract_csvs — ZIP sem arquivos tabulares" begin
+        dir = mktempdir()
+        zippath = joinpath(dir, "vazio.zip")
+        w = ZipFile.Writer(zippath)
+        f = ZipFile.addfile(w, "leiame.pdf")
+        write(f, UInt8[0x25, 0x50, 0x44, 0x46])
+        close(w)
+        csvs = @test_logs (:warn,) BRElections.extract_csvs(zippath)
+        @test isempty(csvs)
+    end
+
+    @testset "Helpers internos de cache (_zip_path, _extract_dir)" begin
+        old = cache_dir()
+        tmp = mktempdir()
+        set_cache_dir!(tmp)
+        url = dataset_url(:candidates, 2022)
+        zp = BRElections._zip_path(:candidates, url)
+        @test zp == joinpath(tmp, "consulta_cand", "consulta_cand_2022.zip")
+        @test BRElections._extract_dir(zp) == joinpath(tmp, "consulta_cand", "consulta_cand_2022")
+        set_cache_dir!(old)
+    end
+
+    @testset "_progress_callback" begin
+        cb = BRElections._progress_callback()
+        @test cb(0, 50) === nothing                # total == 0: não faz nada
+        @test_logs (:info,) cb(1000, 100)           # cruza 10%: loga
+        @test_logs (:info,) cb(1000, 250)           # cruza 20%: loga de novo
+    end
+
+    @testset "url_exists — erro de rede/URL retorna false" begin
+        @test BRElections.url_exists("not a valid url") == false
     end
 
     # -----------------------------------------------------------------------

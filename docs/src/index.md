@@ -26,7 +26,7 @@ Uma chamada como `candidates(2022; uf = "PE")` executa:
 ## Instalação
 
 ```julia
-pkg> add https://github.com/SEU_USUARIO/BRElections.jl
+pkg> add https://github.com/dantebertuzzi/BRElections.jl
 ```
 
 ## Exemplo completo

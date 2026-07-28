@@ -1,5 +1,9 @@
 # Referência da API
 
+```@docs
+BRElections
+```
+
 ## Importação de dados
 
 ```@docs

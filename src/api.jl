@@ -63,9 +63,10 @@ function elections(year::Integer;
     url = ds.by_uf ? dataset_url(t, y; uf) : dataset_url(t, y)
     zippath = _zip_path(t, url)
     download_file(url, zippath; force, verbose)
-    csvs = extract_csvs(zippath; force)
-
-    # Em ZIPs nacionais, restringe aos arquivos da UF pedida (ou ao _BRASIL).
+    # Em ZIPs nacionais, já restringe a extração aos arquivos da UF pedida
+    # (ou ao _BRASIL): evita descompactar/transcodificar dados que não serão
+    # usados, o que para alguns datasets chega a vários GB desnecessários.
+    csvs = extract_csvs(zippath; uf = ds.by_uf ? nothing : uf, force)
     files = ds.by_uf ? csvs : select_csvs(csvs; uf)
     verbose && @info "Importando $(length(files)) arquivo(s)" basename.(files)
 
