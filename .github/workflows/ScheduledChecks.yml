@@ -22,9 +22,19 @@ jobs:
           version: "1"
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
-      - uses: julia-actions/julia-runtest@v1
+      # O CDN do TSE ocasionalmente dá timeout de conexão a partir dos
+      # runners do GitHub (ruído de rede, não link quebrado de verdade) —
+      # tenta de novo algumas vezes antes de considerar falha real.
+      - name: Roda a suíte com BRElections_TEST_NETWORK=true (com retry)
         env:
           BRElections_TEST_NETWORK: "true"
+        run: |
+          for attempt in 1 2 3; do
+            julia --project -e 'using Pkg; Pkg.test()' && exit 0
+            echo "Tentativa $attempt falhou; aguardando antes de tentar de novo…"
+            sleep 30
+          done
+          exit 1
 
   # Atualiza as dependências (CSV.jl, DataFrames.jl, StringEncodings.jl,
   # ZipFile.jl, Scratch.jl, ...) para as versões mais recentes permitidas
