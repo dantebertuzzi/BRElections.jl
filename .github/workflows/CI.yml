@@ -24,6 +24,8 @@ jobs:
       - uses: julia-actions/julia-runtest@v1
 
   docs:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
