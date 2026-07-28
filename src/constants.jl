@@ -24,11 +24,11 @@ const DATASETS = Dict{Symbol,NamedTuple{(:dir, :prefix, :by_uf, :desc),Tuple{Str
                     desc = "Detalhe da apuração por município e zona"),
     :section_votes => (dir = "votacao_secao", prefix = "votacao_secao", by_uf = true,
                     desc = "Votação por seção eleitoral (um ZIP por UF)"),
-    :section_vote_details => (dir = "detalhe_votacao_secao", prefix = "detalhe_votacao_secao", by_uf = true,
-                    desc = "Detalhe da apuração por seção eleitoral (um ZIP por UF)"),
+    :section_vote_details => (dir = "detalhe_votacao_secao", prefix = "detalhe_votacao_secao", by_uf = false,
+                    desc = "Detalhe da apuração por seção eleitoral"),
     :assets => (dir = "bem_candidato", prefix = "bem_candidato", by_uf = false,
                     desc = "Bens declarados pelos candidatos"),
-    :coalitions => (dir = "consulta_legendas", prefix = "consulta_legendas", by_uf = false,
+    :coalitions => (dir = "consulta_coligacao", prefix = "consulta_coligacao", by_uf = false,
                     desc = "Coligações e legendas"),
     :vacancies => (dir = "consulta_vagas", prefix = "consulta_vagas", by_uf = false,
                     desc = "Número de vagas em disputa"),
@@ -91,8 +91,8 @@ end
     dataset_url(type, year; uf = nothing) -> String
 
 Constrói a URL pública do ZIP no CDN do TSE para o dataset `type` e o ano
-`year`. Para datasets particionados por UF (`:section_votes`,
-`:section_vote_details`) o argumento `uf` é obrigatório.
+`year`. Para datasets particionados por UF no CDN (`:section_votes`) o
+argumento `uf` é obrigatório.
 
 ```julia
 julia> dataset_url(:candidates, 2022)

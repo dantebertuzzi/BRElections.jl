@@ -16,8 +16,7 @@ Baixa (com cache), descompacta e importa um dataset eleitoral público do TSE.
   `:vacancies`, `:voter_profile`.
 - `uf`: sigla da UF (`"PE"`, `"SP"`, ...). Opcional para datasets nacionais
   (nesse caso importa o Brasil inteiro); **obrigatória** para
-  `:section_votes` e `:section_vote_details`, que o TSE publica em um ZIP
-  por UF.
+  `:section_votes`, que o TSE publica em um ZIP por UF.
 
 # Importação (repassados a [`read_tse_csv`](@ref))
 

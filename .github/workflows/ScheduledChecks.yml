@@ -1,0 +1,47 @@
+name: Scheduled checks
+on:
+  schedule:
+    # Toda segunda-feira às 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  # Roda a suíte com BRElections_TEST_NETWORK=true: confere, via HEAD
+  # requests, se as URLs de todos os datasets (available_datasets()) ainda
+  # existem no CDN do TSE para os anos testados. Se o TSE mudar o nome de um
+  # diretório/prefixo, remover um dataset ou reestruturar o CDN, este job
+  # falha e o GitHub avisa por e-mail (comportamento padrão de scheduled
+  # workflow que falha).
+  tse-links:
+    name: Links do TSE ainda existem?
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1"
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+        env:
+          BRElections_TEST_NETWORK: "true"
+
+  # Atualiza as dependências (CSV.jl, DataFrames.jl, StringEncodings.jl,
+  # ZipFile.jl, Scratch.jl, ...) para as versões mais recentes permitidas
+  # pelo [compat] e roda a suíte offline contra elas. Pega quebras de API
+  # em pacotes de terceiros antes que cheguem a um usuário final (o
+  # CompatHelper só abre PR sugerindo o bump; este job garante que os
+  # testes de fato passam com a versão nova antes de aceitar o bump).
+  latest-deps:
+    name: Testes com dependências mais recentes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1"
+      - uses: julia-actions/cache@v2
+      - name: Atualiza dependências para as versões mais recentes compatíveis
+        run: julia --project -e 'using Pkg; Pkg.update()'
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1

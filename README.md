@@ -72,9 +72,9 @@ df = elections(2020; type = :assets, uf = "PE")
 | `:party_votes`           | `votacao_partido_munzona`  | Votes by party/municipality/zone              |
 | `:vote_details`          | `detalhe_votacao_munzona`  | Vote count details by municipality/zone       |
 | `:section_votes`†        | `votacao_secao`            | Votes by electoral section                    |
-| `:section_vote_details`† | `detalhe_votacao_secao`    | Vote count details by section                 |
+| `:section_vote_details`  | `detalhe_votacao_secao`    | Vote count details by section                 |
 | `:assets`                | `bem_candidato`            | Candidate asset declarations                  |
-| `:coalitions`            | `consulta_legendas`        | Coalitions and party legends                  |
+| `:coalitions`            | `consulta_coligacao`       | Coalitions and party legends                  |
 | `:vacancies`             | `consulta_vagas`           | Number of seats in dispute                    |
 | `:voter_profile`         | `perfil_eleitorado`        | Electorate profile                            |
 

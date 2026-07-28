@@ -266,8 +266,8 @@ end
         @test eltype(ds.description) == String
         @test :section_votes in ds.dataset
         datasets_by_uf = Set(ds.dataset[ds.by_uf])
-        @test datasets_by_uf == Set([:section_votes, :section_vote_details])
-        @test length(datasets_by_uf) == 2
+        @test datasets_by_uf == Set([:section_votes])
+        @test length(datasets_by_uf) == 1
     end
 
     @testset "elections — integração offline (dataset nacional)" begin
@@ -477,8 +477,20 @@ end
     if get(ENV, "BRElections_TEST_NETWORK", "false") == "true"
         @testset "Rede (TSE)" begin
             @test BRElections.url_exists(dataset_url(:vacancies, 2022))
-            av = available_files(2022; ufs = ["PE"])
-            @test av isa DataFrame && all(av.exists)
+
+            # Checa os links de todos os datasets (available_datasets()) em
+            # mais de um ano — pega tanto quebra de link pontual quanto
+            # mudanças de estrutura do CDN entre ciclos eleitorais.
+            for year in (2022, BRElections.LAST_KNOWN_YEAR)
+                @testset "available_files($year)" begin
+                    av = available_files(year; ufs = ["PE"])
+                    @test av isa DataFrame
+                    missing_ds = av[.!av.exists, [:dataset, :uf, :url]]
+                    isempty(missing_ds) ||
+                        @warn "Datasets indisponíveis no CDN do TSE" year missing_ds
+                    @test isempty(missing_ds)
+                end
+            end
 
             # consulta_vagas é o menor dataset — bom para smoke test
             df = vacancies(2022; verbose = false)
