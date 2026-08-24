@@ -22,10 +22,40 @@ jobs:
           version: "1"
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
+
+      # O CDN do TSE (Akamai) bloqueia com HTTP 403 ou fica indisponível de
+      # tempos em tempos, para o domínio inteiro. Isso não é link quebrado, e
+      # falhar nesse caso só geraria e-mail de alarme falso toda segunda.
+      # Sonda uma URL conhecida antes de gastar o runner: 200 ou 404 querem
+      # dizer que o CDN está respondendo (e 404 é justamente o que este job
+      # existe para pegar); qualquer outra coisa é indisponibilidade.
+      - name: Sonda o CDN do TSE
+        id: probe
+        run: |
+          url="https://cdn.tse.jus.br/estatistica/sead/odsele/consulta_vagas/consulta_vagas_2022.zip"
+          code=$(curl -sS -o /dev/null -w "%{http_code}" -I --max-time 60 --retry 2 "$url" || echo "000")
+          echo "HEAD $url -> $code"
+          echo "status=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" = "200" ] || [ "$code" = "404" ]; then
+            echo "up=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "up=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=CDN do TSE indisponível::HEAD retornou $code — checagem de links pulada (indisponibilidade do TSE, não link quebrado)."
+            {
+              echo "## CDN do TSE indisponível"
+              echo
+              echo "\`HEAD $url\` retornou **HTTP $code**."
+              echo
+              echo "A checagem de links foi pulada: isso indica bloqueio ou indisponibilidade"
+              echo "do lado do TSE, não link quebrado no pacote."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       # O CDN do TSE ocasionalmente dá timeout de conexão a partir dos
       # runners do GitHub (ruído de rede, não link quebrado de verdade) —
       # tenta de novo algumas vezes antes de considerar falha real.
       - name: Roda a suíte com BRElections_TEST_NETWORK=true (com retry)
+        if: steps.probe.outputs.up == 'true'
         env:
           BRElections_TEST_NETWORK: "true"
         run: |

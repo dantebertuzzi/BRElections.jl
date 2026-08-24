@@ -469,36 +469,65 @@ end
 
     @testset "url_exists — erro de rede/URL retorna false" begin
         @test BRElections.url_exists("not a valid url") == false
+        @test BRElections.url_status("not a valid url") == 0
     end
 
     # -----------------------------------------------------------------------
     # Testes de rede (opcionais): BRElections_TEST_NETWORK=true julia --project -e 'using Pkg; Pkg.test()'
     # -----------------------------------------------------------------------
     if get(ENV, "BRElections_TEST_NETWORK", "false") == "true"
+        # O TSE bloqueia (HTTP 403 do WAF da Akamai) ou fica indisponível de
+        # tempos em tempos. Isso não é link quebrado: falhar nesse caso só
+        # produziria alarme falso semanal. Sonda uma URL conhecida antes de
+        # rodar os testes de rede e, se o CDN não estiver respondendo, pula.
+        probe_url = dataset_url(:vacancies, 2022)
+        probe = BRElections.url_status(probe_url)
+        cdn_up = 200 <= probe < 300 || probe == 404   # 404 = link quebrado de verdade
+
+        if !cdn_up
+            @warn """
+                  CDN do TSE indisponível (HTTP $probe) — testes de rede pulados.
+                  Isso indica bloqueio/indisponibilidade do lado do TSE, não link quebrado.
+                  """ probe_url
+        end
+
         @testset "Rede (TSE)" begin
-            @test BRElections.url_exists(dataset_url(:vacancies, 2022))
+            if !cdn_up
+                @test_skip BRElections.url_exists(probe_url)
+            else
+                @test BRElections.url_exists(probe_url)
 
-            # Checa os links de todos os datasets (available_datasets()) em
-            # mais de um ano — pega tanto quebra de link pontual quanto
-            # mudanças de estrutura do CDN entre ciclos eleitorais.
-            for year in (2022, BRElections.LAST_KNOWN_YEAR)
-                @testset "available_files($year)" begin
-                    av = available_files(year; ufs = ["PE"])
-                    @test av isa DataFrame
-                    missing_ds = av[.!av.exists, [:dataset, :uf, :url]]
-                    isempty(missing_ds) ||
-                        @warn "Datasets indisponíveis no CDN do TSE" year missing_ds
-                    @test isempty(missing_ds)
+                # Checa os links de todos os datasets (available_datasets()) em
+                # mais de um ano — pega tanto quebra de link pontual quanto
+                # mudanças de estrutura do CDN entre ciclos eleitorais.
+                for year in (2022, BRElections.LAST_KNOWN_YEAR)
+                    @testset "available_files($year)" begin
+                        av = available_files(year; ufs = ["PE"])
+                        @test av isa DataFrame
+
+                        # Só conta como ausente o que o CDN respondeu 404.
+                        # 403/5xx/0 são indisponibilidade — reporta à parte.
+                        gone = av[av.status .== 404, [:dataset, :uf, :url]]
+                        unreachable = av[.!av.exists .&& av.status .!= 404,
+                                         [:dataset, :uf, :url, :status]]
+
+                        isempty(gone) ||
+                            @warn "Datasets ausentes no CDN do TSE (HTTP 404)" year gone
+                        isempty(unreachable) ||
+                            @warn "Datasets inacessíveis (CDN recusou ou não respondeu)" year unreachable
+
+                        @test isempty(gone)
+                    end
                 end
+
+                # consulta_vagas é o menor dataset — bom para smoke test
+                df = vacancies(2022; verbose = false)
+                @test nrow(df) > 0
+                @test "sg_uf" in names(df)
+
+                pe = vacancies(2022; uf = "PE", verbose = false)
+                @test all(==("PE"), skipmissing(pe.sg_uf))
             end
-
-            # consulta_vagas é o menor dataset — bom para smoke test
-            df = vacancies(2022; verbose = false)
-            @test nrow(df) > 0
-            @test "sg_uf" in names(df)
-
-            pe = vacancies(2022; uf = "PE", verbose = false)
-            @test all(==("PE"), skipmissing(pe.sg_uf))
         end
     else
         @info "Testes de rede desativados. Ative com BRElections_TEST_NETWORK=true."
