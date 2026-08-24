@@ -1,5 +1,7 @@
 # BRElections.jl
 
+[![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://dantebertuzzi.github.io/BRElections.jl/stable)
+[![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://dantebertuzzi.github.io/BRElections.jl/dev)
 [![CI](https://github.com/dantebertuzzi/BRElections.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/dantebertuzzi/BRElections.jl/actions/workflows/CI.yml)
 
 <img src="logo.png" alt="BRElections logo" width="200" align="right">
@@ -31,8 +33,10 @@ authorisation is required.
 ## Installation
 
 ```julia
-pkg> add https://github.com/dantebertuzzi/BRElections.jl
+pkg> add BRElections
 ```
+
+Requires Julia 1.9 or later.
 
 ## Quick start
 

@@ -26,8 +26,10 @@ Uma chamada como `candidates(2022; uf = "PE")` executa:
 ## Instalação
 
 ```julia
-pkg> add https://github.com/dantebertuzzi/BRElections.jl
+pkg> add BRElections
 ```
+
+Requer Julia 1.9 ou superior.
 
 ## Exemplo completo
 
