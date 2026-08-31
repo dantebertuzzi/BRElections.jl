@@ -3,6 +3,7 @@
 [![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://dantebertuzzi.github.io/BRElections.jl/stable)
 [![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://dantebertuzzi.github.io/BRElections.jl/dev)
 [![CI](https://github.com/dantebertuzzi/BRElections.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/dantebertuzzi/BRElections.jl/actions/workflows/CI.yml)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22182707.svg)](https://doi.org/10.5281/zenodo.22182707)
 
 <img src="logo.png" alt="BRElections logo" width="200" align="right">
 
@@ -117,10 +118,84 @@ BRElections_TEST_NETWORK=true julia --project -e 'using Pkg; Pkg.test()'  # incl
 ## How to cite
 
 If BRElections.jl was part of your analysis pipeline, cite **two things
-separately**: the software and the data. The repository ships a
-[`CITATION.cff`](CITATION.cff), which GitHub reads natively — the **"Cite this
-repository"** button generates ready APA and BibTeX. The TSE is the primary
-source and must be cited as such, with the date you downloaded the files.
+separately**: the software and the data. They are distinct objects with
+distinct responsibilities — the package answers for downloading, decoding and
+typing, the TSE answers for the content.
+
+### 1. The software
+
+The repository ships a [`CITATION.cff`](CITATION.cff), which GitHub reads
+natively: the **"Cite this repository"** button in the sidebar generates ready
+APA and BibTeX. A [`CITATION.bib`](CITATION.bib) is also provided:
+
+```bibtex
+@software{bertuzzi_brelections_2026,
+  author  = {Bertuzzi, Dante},
+  title   = {{BRElections.jl}: a {Julia} interface to {Brazilian} electoral
+             open data ({TSE})},
+  year    = {2026},
+  version = {0.1.1},
+  doi     = {10.5281/zenodo.22182707},
+  url     = {https://github.com/dantebertuzzi/BRElections.jl},
+  note    = {Julia package}
+}
+```
+
+**Cite the version you used**, not "the latest". The import layer is part of
+the result: which columns are kept as `String`, which sentinels become
+`missing` and how a schema change on the TSE side is absorbed can differ
+between releases. Run `pkg> status BRElections` and use the number it prints.
+
+### 2. The TSE data
+
+The TSE is the primary source and must be cited as such, **with the download
+date** — the open-data files are regenerated as results are totalled and
+candidacies are judged, so the same query run on different dates can return
+different numbers:
+
+> BRASIL. Tribunal Superior Eleitoral. *Repositório de dados eleitorais*:
+> dados abertos. Brasília: TSE, 2026. Available at:
+> https://cdn.tse.jus.br/estatistica/sead/odsele/. Accessed: 31 Aug. 2026.
+
+State the **year and the dataset** you used (`candidates`, `candidate_votes`,
+`section_votes`, …), since each is a separate published file with its own
+layout. Variable meanings come from the `leiame.pdf` shipped inside each ZIP,
+which stays in the cache for reference.
+
+### 3. Reproducibility
+
+So that someone else reaches your number, record in the paper or supplementary
+material: the **BRElections.jl and Julia versions**; the `Project.toml` and
+`Manifest.toml` of the environment (the `Manifest.toml` pins the whole
+dependency tree and is what makes the environment reconstructible with
+`Pkg.instantiate()`); the **download date** of the TSE files (and whether you
+worked from an older cache — `cache_dir` shows where it lives); and the year,
+dataset and any `filter`/`columns` you applied during import, since rows and
+columns dropped at read time never reach the table you analysed.
+
+### The standards behind this
+
+| Standard | What it establishes |
+|---|---|
+| [FORCE11 — Software Citation Principles](https://force11.org/info/software-citation-principles-published-2016/) | Software is a citable research product. Six principles: importance, credit, unique identification, persistence, accessibility and **specificity** (cite the exact version). |
+| [Citation File Format (CFF) 1.2.0](https://citation-file-format.github.io/) | Machine-readable citation metadata. What GitHub and Zenodo consume. |
+| ABNT NBR 6023:2018 | References in Brazilian publications; requires `Disponível em` + `Acesso em` for electronic documents. |
+| [Zenodo + GitHub](https://docs.github.com/en/repositories/archiving-a-github-repository/referencing-and-citing-content) | Mints a persistent DOI per release, plus a *concept DOI* always pointing at the newest version. |
+
+**The DOIs of this project**: the repository is connected to
+[Zenodo](https://zenodo.org), so every release is archived and gets a
+persistent identifier — the citation no longer depends on the GitHub URL
+surviving a rename or a transfer. Two DOIs coexist, and they are not
+interchangeable:
+
+| DOI | What it identifies |
+|---|---|
+| [10.5281/zenodo.22182707](https://doi.org/10.5281/zenodo.22182707) | *Concept DOI* — the project as a whole. Always resolves to the newest version; it is what the badge at the top of this README points at. |
+| one per release | Each archived version gets its own — 0.1.1 is [10.5281/zenodo.22182708](https://doi.org/10.5281/zenodo.22182708). All of them are listed on the [Zenodo page](https://doi.org/10.5281/zenodo.22182707). |
+
+The BibTeX above carries the concept DOI, so it keeps working across releases.
+**In a paper, swap it for the DOI of the version you used**: the concept DOI
+says which project you used, the version DOI says which code actually ran.
 
 ## License
 

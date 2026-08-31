@@ -18,7 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Zenodo deposit instead of letting them be inferred from the repository. The
   repository is now connected to Zenodo: from this release on, every tag is
   archived and gets a persistent DOI, plus a concept DOI that always resolves
-  to the newest version.
+  to the newest version: [10.5281/zenodo.22182707](https://doi.org/10.5281/zenodo.22182707)
+  for the project, [10.5281/zenodo.22182708](https://doi.org/10.5281/zenodo.22182708)
+  for this version.
 
 ## [0.1.0] - 2026-08-24
 

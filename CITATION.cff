@@ -20,6 +20,16 @@ authors:
 version: 0.1.1
 date-released: "2026-08-31"
 license: MIT
+doi: 10.5281/zenodo.22182707
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.22182707
+    description: >-
+      Concept DOI — always resolves to the most recent
+      version of BRElections.jl.
+  - type: doi
+    value: 10.5281/zenodo.22182708
+    description: DOI of version 0.1.1.
 repository-code: "https://github.com/dantebertuzzi/BRElections.jl"
 url: "https://dantebertuzzi.github.io/BRElections.jl/stable"
 keywords:
