@@ -1,0 +1,33 @@
+{
+  "upload_type": "software",
+  "title": "BRElections.jl: a Julia interface to Brazilian electoral open data (TSE)",
+  "description": "<p>BRElections.jl gives typed access from Julia to the public electoral data published by Brazil's Tribunal Superior Eleitoral (TSE) at its open-data CDN: candidates, candidate and party votes, vote details, polling-station results, declared assets, coalitions, vacancies and voter profiles, from 1998 onward.</p><p>The package handles the mechanics that stand between the published ZIP files and a usable table: downloads with retries, exponential backoff and atomic writes; a portable local cache built on Scratch.jl; ZIP extraction with on-the-fly ISO-8859-1 to UTF-8 transcoding; chunk-based multithreaded CSV reading with column selection and row filtering applied during import, so non-matching rows never reach memory; and type conversion tuned to TSE conventions, with identifier columns kept as String so leading zeros survive.</p><p>It uses only files that are openly published, with no private API or authorisation. The data belongs to the TSE; this is an independent open-source client with no official affiliation to, or endorsement from, the TSE.</p>",
+  "creators": [
+    {
+      "name": "Bertuzzi, Dante"
+    }
+  ],
+  "license": "MIT",
+  "access_right": "open",
+  "keywords": [
+    "Julia",
+    "Brazil",
+    "elections",
+    "electoral data",
+    "TSE",
+    "open data",
+    "political science"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/dantebertuzzi/BRElections.jl",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    },
+    {
+      "identifier": "https://juliahub.com/ui/Packages/General/BRElections",
+      "relation": "isIdenticalTo",
+      "scheme": "url"
+    }
+  ]
+}

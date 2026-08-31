@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-31
+
+### Added
+
+- `CITATION.cff`, so GitHub renders the "Cite this repository" button with
+  ready APA and BibTeX, and a "How to cite" section in the README asking that
+  the software and the TSE data be cited separately.
+- `.zenodo.json`, which sets the title, author, MIT license and keywords of the
+  Zenodo deposit instead of letting them be inferred from the repository. The
+  repository is now connected to Zenodo: from this release on, every tag is
+  archived and gets a persistent DOI, plus a concept DOI that always resolves
+  to the newest version.
+
 ## [0.1.0] - 2026-08-24
 
 First public release.
@@ -38,5 +51,6 @@ First public release.
 - Test suite that runs offline by default against synthetic fixtures, with
   network smoke tests against the TSE CDN behind `BRElections_TEST_NETWORK`.
 
-[Unreleased]: https://github.com/dantebertuzzi/BRElections.jl/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/dantebertuzzi/BRElections.jl/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/dantebertuzzi/BRElections.jl/releases/tag/v0.1.1
 [0.1.0]: https://github.com/dantebertuzzi/BRElections.jl/releases/tag/v0.1.0

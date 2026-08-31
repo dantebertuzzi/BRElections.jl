@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software in academic work, please cite it
+  using the metadata in this file, and cite the TSE electoral
+  data you analysed as a separate data source.
+type: software
+title: "BRElections.jl: a Julia interface to Brazilian electoral open data (TSE)"
+abstract: >-
+  Julia package for Brazil's public electoral data, published by the Tribunal
+  Superior Eleitoral (TSE): automatic download of the open-data ZIP files with
+  retries and atomic writes, a portable local cache, ZIP extraction with
+  on-the-fly ISO-8859-1 to UTF-8 transcoding, chunk-based multithreaded CSV
+  reading with column selection and row filtering applied during import, and
+  type conversion tuned to TSE conventions (dates, #NULO#/#NE# sentinels, and
+  identifier columns kept as String so leading zeros survive).
+authors:
+  - family-names: Bertuzzi
+    given-names: Dante
+    email: dantesbertuzzi@gmail.com
+version: 0.1.1
+date-released: "2026-08-31"
+license: MIT
+repository-code: "https://github.com/dantebertuzzi/BRElections.jl"
+url: "https://dantebertuzzi.github.io/BRElections.jl/stable"
+keywords:
+  - julia
+  - brazil
+  - elections
+  - electoral data
+  - TSE
+  - open data
+  - political science

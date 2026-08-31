@@ -114,6 +114,14 @@ BRElections_TEST_NETWORK=true julia --project -e 'using Pkg; Pkg.test()'  # incl
 - Official variable dictionaries come with each ZIP (`leiame.pdf`) and remain
   in the cache for reference.
 
+## How to cite
+
+If BRElections.jl was part of your analysis pipeline, cite **two things
+separately**: the software and the data. The repository ships a
+[`CITATION.cff`](CITATION.cff), which GitHub reads natively — the **"Cite this
+repository"** button generates ready APA and BibTeX. The TSE is the primary
+source and must be cited as such, with the date you downloaded the files.
+
 ## License
 
 MIT. The data belongs to the TSE and is publicly available.
