@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Several years at once: `elections`, the shortcuts and `campaign_finance`
+  accept a range or vector of years (`candidates(2014:4:2022)`) and stack them
+  with an `ano` column. All years are validated before any download. Columns
+  present only in some years are `missing` in the others, columns whose type
+  differs between years become text (numbers of different types are
+  promoted), and columns renamed by the TSE are unified (`COLUMN_ALIASES`;
+  `NM_EMAIL` → `DS_EMAIL`). Checked on real 2014/2018/2022 candidates: no
+  column ends up as `Any`.
+
 - Campaign finance, 2018 onward: `campaign_finance(year; table, filer)` returns
   candidates' or party bodies' revenue (also by original donor) and contracted
   or paid expenses. The eight tables are also `elections` types

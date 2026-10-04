@@ -283,7 +283,7 @@ end
         cp(fixture_zip, zippath_dest)
         BRElections.extract_csvs(zippath_dest)
 
-        df = elections(2022; type = :candidates, verbose = false)
+        df = elections(2022; type = :candidates, verbose = false, check_updates = false)
         @test nrow(df) == 4
         @test "dt_geracao" in names(df)
         @test "nr_cpf_candidato" in names(df)
@@ -307,7 +307,7 @@ end
         cp(fixture_zip, zippath_dest)
         BRElections.extract_csvs(zippath_dest)
 
-        df = elections(2022; type = :section_votes, uf = "PE", verbose = false)
+        df = elections(2022; type = :section_votes, uf = "PE", verbose = false, check_updates = false)
         @test nrow(df) == 4
         @test "sg_uf" in names(df)
 
@@ -345,13 +345,13 @@ end
         cp(fixture_zip, zippath_dest)
         BRElections.extract_csvs(zippath_dest)
 
-        df = elections(2022; type = :candidates, columns = [:nr_turno, "SG_UF"], verbose = false)
+        df = elections(2022; type = :candidates, columns = [:nr_turno, "SG_UF"], verbose = false, check_updates = false)
         @test names(df) == ["nr_turno", "sg_uf"]
         @test nrow(df) == 4
 
         df_f = elections(2022; type = :candidates,
                          filter = row -> row.NR_TURNO == 1 && row.SG_UF == "PE",
-                         verbose = false)
+                         verbose = false, check_updates = false)
         @test nrow(df_f) == 2
         @test all(==(1), df_f.nr_turno)
 
@@ -372,7 +372,7 @@ end
         cp(fixture_zip, zippath_dest)
         BRElections.extract_csvs(zippath_dest)
 
-        df = elections(2022; type = :candidates, normalize_names = false, verbose = false)
+        df = elections(2022; type = :candidates, normalize_names = false, verbose = false, check_updates = false)
         @test "NR_TURNO" in names(df)
         @test "DT_GERACAO" in names(df)
 
@@ -852,6 +852,58 @@ end
               "A;" * "Ã£"^40 * "\nBÇ\n"
     end
 
+    @testset "elections — vários anos (offline)" begin
+        old_cache = cache_dir()
+        set_cache_dir!(mktempdir())
+        # Dois anos com esquemas diferentes, como os do TSE:
+        #  * 2018 tem NM_EMAIL (renomeada para DS_EMAIL) e uma coluna que sumiu;
+        #  * CD_CODIGO é número em 2018 e texto em 2022; VR_VALOR é Int e Float.
+        files = Dict(
+            2018 => "ANO_ELEICAO;SG_UF;NM_EMAIL;CD_CODIGO;VR_VALOR;SO_2018\n2018;PE;a@x.br;10;1;velha\n2018;BA;b@x.br;20;2;velha\n",
+            2022 => "ANO_ELEICAO;SG_UF;DS_EMAIL;CD_CODIGO;VR_VALOR;SO_2022\n2022;PE;c@x.br;A1;1,5;nova\n",
+        )
+        for (y, content) in files
+            zp = BRElections._zip_path(:candidates, dataset_url(:candidates, y))
+            mkpath(dirname(zp))
+            w = ZipFile.Writer(zp)
+            f = ZipFile.addfile(w, "consulta_cand_$(y)_BRASIL.csv")
+            write(f, content)
+            close(w)
+        end
+        try
+            df = candidates(2022:-4:2018; verbose = false, check_updates = false)   # ordem e repetição não importam
+            @test names(df)[1] == "ano"
+            @test df.ano == [2018, 2018, 2022]
+            @test df.ds_email == ["a@x.br", "b@x.br", "c@x.br"]        # NM_EMAIL unificada
+            @test !("nm_email" in names(df))
+            @test df.cd_codigo == ["10", "20", "A1"]                    # Int + texto → texto
+            @test eltype(df.cd_codigo) == String
+            @test df.vr_valor == [1.0, 2.0, 1.5]                        # Int + Float → Float
+            @test eltype(df.vr_valor) == Float64
+            @test isequal(df.so_2018, ["velha", "velha", missing])      # colunas de um ano só
+            @test isequal(df.so_2022, [missing, missing, "nova"])
+
+            # pedir o nome atual traz o antigo também
+            df = elections([2018, 2022, 2018]; type = :candidates, columns = [:sg_uf, :ds_email],
+                           verbose = false, check_updates = false)
+            @test names(df) == ["ano", "sg_uf", "ds_email"]
+            @test df.ds_email == ["a@x.br", "b@x.br", "c@x.br"]
+
+            # filter e normalize_names = false continuam valendo
+            df = candidates([2018, 2022]; filter = row -> row.sg_uf == "PE", normalize_names = false,
+                            verbose = false, check_updates = false)
+            @test df.ANO == [2018, 2022] && "DS_EMAIL" in names(df)
+        finally
+            set_cache_dir!(old_cache)
+        end
+
+        # validação antes de qualquer download
+        @test_throws ArgumentError candidates(Int[])
+        @test_throws ArgumentError campaign_finance([2016, 2022]; uf = "PE")       # 2016 < 2018
+        @test_throws ArgumentError section_votes([2018, 2022])                      # falta uf
+        @test_throws ArgumentError candidates([2018, 2019])                         # ano ímpar
+    end
+
     @testset "url_exists — erro de rede/URL retorna false" begin
         @test BRElections.url_exists("not a valid url") == false
         @test BRElections.url_status("not a valid url") == 0
@@ -924,6 +976,11 @@ end
                 BRElections._write_meta(zippath, Dict("etag" => "\"versao-antiga\""))
                 @test_logs (:info, r"nova versão") match_mode = :any vacancies(2022)
                 @test BRElections._read_meta(zippath)["etag"] != "\"versao-antiga\""
+
+                # Vários anos, de verdade (vagas: arquivos pequenos)
+                vagas = vacancies([2018, 2022]; uf = "PE", verbose = false)
+                @test Set(vagas.ano) == Set([2018, 2022])
+                @test all(vagas.ano .== vagas.ano_eleicao)
 
                 # Correspondência TSE ↔ IBGE
                 mun = municipalities(verbose = false)

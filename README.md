@@ -99,6 +99,21 @@ Each dataset has a shortcut with the same name (`candidates(2022)`,
 `cassation_reasons(2022)`…). `available_datasets()` lists them all, with the
 first year of each.
 
+### Several years at once
+
+Pass a range or vector of years to stack them, with an `ano` column in front:
+
+```julia
+cand = candidates(2014:4:2022; uf = "PE", columns = [:ds_cargo, :sg_partido])
+combine(groupby(cand, [:ano, :sg_partido]), nrow => :candidacies)
+```
+
+Every year is validated before anything is downloaded. Columns that exist only
+in some years (the TSE adds and drops fields over time) are `missing` in the
+others; a column whose type differs between years (number in one, text in
+another) becomes text; columns the TSE renamed are unified under the current
+name (`NM_EMAIL` → `DS_EMAIL`).
+
 ### Campaign finance
 
 Revenue and expenses declared by candidates and party bodies, from 2018 on (the
