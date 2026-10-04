@@ -24,6 +24,8 @@ authorisation is required.
 - Cache revalidation: files the TSE republishes are downloaded again, and only
   then;
 - TSE ↔ IBGE municipality code crosswalk (`municipalities`);
+- Live vote counting on election night, straight from the TSE's results system
+  (`live_results`);
 - Discovery of published files by year (`available_files`);
 - ZIP decompression with on-the-fly ISO-8859-1 → UTF-8 transcoding;
 - Efficient import of large CSVs (CSV.jl, multithreaded, chunk-based reading);
@@ -103,6 +105,36 @@ mun = municipalities()             # sg_uf, cd_municipio, cd_municipio_ibge,
 votes = candidate_votes(2022; uf = "PE")
 votes = leftjoin(votes, select(mun, :cd_municipio, :cd_municipio_ibge);
                  on = :cd_municipio)
+```
+
+### Live results
+
+The open-data files above are only published days after an election. On
+election night, `live_results` reads the TSE's results system
+(`resultados.tse.jus.br`, the source of its website and "Resultados" app), which
+is updated every few minutes while votes are counted. Nothing is cached. After
+the count, it keeps working for recent elections, by municipality too.
+
+```julia
+pres = live_results(:president)                  # Brazil
+metadata(pres, "pc_secoes_totalizadas")          # % of polling stations counted
+
+live_results(:governor; uf = "PE")
+live_results(:president; uf = "SP", municipality = "São Paulo")
+live_results(:mayor; uf = "PE", municipality = 2611606)   # IBGE code works too
+```
+
+Offices: `:president`, `:governor`, `:senator`, `:federal_deputy`,
+`:state_deputy`, `:district_deputy`, `:mayor`, `:councillor`. The election is
+picked automatically (the latest one already held that has the office and
+covers the place, so the runoff is used once it happens); pass `election` to
+choose one. The result has one row per candidate, sorted by votes; the count
+summary (polling stations counted, turnout, valid/blank/null votes, update
+time) is in `metadata(df)`. `examples/live_results.jl` shows it as a table
+that refreshes itself:
+
+```bash
+julia --project=. examples/live_results.jl presidente --watch 60
 ```
 
 ### Cache

@@ -27,6 +27,12 @@ read_tse_csv
 municipalities
 ```
 
+## Apuração ao vivo
+
+```@docs
+live_results
+```
+
 ## Descoberta de arquivos
 
 ```@docs

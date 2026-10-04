@@ -13,7 +13,7 @@ Ponto de entrada principal: [`elections`](@ref). Funções de conveniência:
 [`vote_details`](@ref), [`section_votes`](@ref), [`section_vote_details`](@ref),
 [`assets`](@ref), [`coalitions`](@ref), [`vacancies`](@ref),
 [`voter_profile`](@ref). Para cruzar com dados do IBGE:
-[`municipalities`](@ref).
+[`municipalities`](@ref). Apuração ao vivo: [`live_results`](@ref).
 
 ```julia
 using BRElections
@@ -40,13 +40,14 @@ using JSON
 using Logging
 using Scratch
 using StringEncodings
+using Unicode
 using ZipFile
 
 export elections,
        candidates, candidate_votes, party_votes, vote_details,
        section_votes, section_vote_details,
        assets, coalitions, vacancies, voter_profile,
-       municipalities,
+       municipalities, live_results,
        available_datasets, available_files, dataset_url,
        cache_dir, set_cache_dir!, clear_cache!,
        read_tse_csv
@@ -58,5 +59,6 @@ include("extract.jl")
 include("parse.jl")
 include("api.jl")
 include("municipalities.jl")
+include("live.jl")
 
 end # module

@@ -607,6 +607,115 @@ end
         @test_throws ArgumentError municipalities(uf = "XX")
     end
 
+    @testset "live_results — escolha da eleição (offline)" begin
+        config = BRElections.JSON.parse("""
+            { "pl" : [
+              { "c" : "ele2024", "dt" : "06/10/2024", "e" : [
+                { "cd" : "619", "nm" : "Municipal 1T", "abr" : [ { "cd" : "br", "cp" : [ { "cd" : "11" }, { "cd" : "13" } ] } ] } ] },
+              { "c" : "ele2024", "dt" : "27/10/2024", "e" : [
+                { "cd" : "620", "nm" : "Municipal 2T", "abr" : [
+                  { "cd" : "sp", "mu" : [ { "cd" : "71072" } ], "cp" : [ { "cd" : "11" } ] } ] } ] },
+              { "c" : "ele2024", "dt" : "21/06/2026", "e" : [
+                { "cd" : "6281", "nm" : "Suplementar Tuiuti", "abr" : [
+                  { "cd" : "sp", "mu" : [ { "cd" : "69515" } ], "cp" : [ { "cd" : "11" } ] } ] },
+                { "cd" : "6278", "nm" : "Suplementar RR", "abr" : [ { "cd" : "rr", "cp" : [ { "cd" : "3" } ] } ] } ] },
+              { "c" : "ele2026", "dt" : "04/10/2026", "e" : [
+                { "cd" : "6257", "nm" : "Federal 1T", "abr" : [ { "cd" : "br", "cp" : [ { "cd" : "1" } ] } ] },
+                { "cd" : "6259", "nm" : "Estadual 1T", "abr" : [ { "cd" : "br", "cp" : [ { "cd" : "3" }, { "cd" : "5" } ] } ] } ] },
+              { "c" : "ele2026", "dt" : "25/10/2026", "e" : [
+                { "cd" : "6258", "nm" : "Federal 2T", "abr" : [ { "cd" : "br", "cp" : [ { "cd" : "1" } ] } ] } ] } ] }
+            """)
+        find(cargo; kw...) = BRElections._find_election(config, cargo; kw...).ele
+        dia = Date(2026, 10, 4)
+        # 2º turno ainda não realizado: fica com o 1º
+        @test find(1; today = dia) == "6257"
+        @test find(1; today = Date(2026, 10, 25)) == "6258"
+        # só há eleições futuras: escolhe a mais próxima
+        @test find(1; today = Date(2020, 1, 1)) == "6257"
+        # abrangência com lista de municípios só serve para eles
+        @test find(11; uf = "SP", municipality = 71072, today = dia) == "620"
+        @test find(11; uf = "SP", municipality = 69515, today = dia) == "6281"
+        @test find(11; uf = "SP", municipality = 50000, today = dia) == "619"
+        @test find(11; uf = "PE", municipality = 25313, today = dia) == "619"
+        # eleição estadual suplementar vale para a UF inteira, e só para ela
+        @test find(3; uf = "RR", today = Date(2026, 7, 1)) == "6278"
+        @test find(3; uf = "PE", today = Date(2026, 7, 1)) == "6259"   # única, embora futura
+        @test find(13; uf = "SP", municipality = 71072, today = dia) == "619"   # vereador não teve 2º turno
+        @test_throws ArgumentError BRElections._find_election(config, 99)
+    end
+
+    @testset "live_results — parsing (offline)" begin
+        data = BRElections.JSON.parse("""
+            { "ele" : "6278", "cdabr" : "rr", "dg" : "29/09/2026", "hg" : "19:26:03", "tf" : "s",
+              "s" : { "ts" : "1483", "st" : "1483", "pst" : "100,00" },
+              "e" : { "te" : "384582", "est" : "384582", "c" : "270558", "pc" : "70,35",
+                      "a" : "114024", "pa" : "29,65" },
+              "v" : { "tv" : "270558", "vv" : "102845", "pvv" : "39,13", "vb" : "3414", "pvb" : "1,26",
+                      "tvn" : "4295", "ptvn" : "1,59" },
+              "carg" : [ { "cd" : "3", "nmn" : "Governador", "nv" : "1", "agr" : [
+                { "n" : "1", "nm" : "Roraima Segue em Frente", "par" : [ { "sg" : "REPUBLICANOS", "cand" : [
+                  { "n" : "10", "sqcand" : "230002529860", "nm" : "FRANCISCO DOS SANTOS SAMPAIO",
+                    "nmu" : "SOLDADO SAMPAIO", "dvt" : "Válido", "e" : "n", "st" : "Não eleito",
+                    "vap" : "93897", "pvap" : "35,72", "pvapn" : "35,722791413" } ] } ] },
+                { "n" : "2", "nm" : "PARTIDO LIBERAL", "par" : [ { "sg" : "PL", "cand" : [
+                  { "n" : "22", "sqcand" : "230002529896", "nm" : "ARTHUR HENRIQUE BRANDÃO MACHADO",
+                    "nmu" : "ARTHUR HENRIQUE", "dvt" : "Anulado sub judice", "e" : "n", "st" : "",
+                    "vap" : "160004", "pvap" : "60,87", "pvapn" : "60,872972695" } ] } ] } ] } ] }
+            """)
+        df = BRElections._parse_live_results(data)
+        @test names(df) == ["nr_candidato", "nm_urna_candidato", "nm_candidato", "sg_partido",
+                            "nm_agremiacao", "qt_votos", "pc_votos", "eleito", "ds_situacao",
+                            "ds_destinacao_voto", "sq_candidato"]
+        @test df.nr_candidato == [22, 10]                     # ordem decrescente de votos
+        @test df.qt_votos == [160004, 93897]
+        @test df.pc_votos[1] ≈ 60.872972695
+        @test isequal(df.ds_situacao, [missing, "Não eleito"])
+        @test eltype(df.ds_situacao) == Union{Missing,String}
+        @test df.sq_candidato[1] == "230002529896"
+        m = metadata(df)
+        @test m["cargo"] == "Governador" && m["vagas"] == 1 && m["abrangencia"] == "RR"
+        @test m["atualizado_em"] == DateTime(2026, 9, 29, 19, 26, 3)
+        @test m["totalizacao_final"] && m["pc_secoes_totalizadas"] == 100.0
+        @test m["votos_validos"] == 102845 && m["votos_nulos"] == 4295
+        @test m["pc_votos_validos"] ≈ 100 * 102845 / 270558           # sobre o total, não o `pvv`
+        @test m["pc_votos_brancos"] == 1.26
+        @test m["pc_comparecimento"] == 70.35 && m["pc_abstencao"] == 29.65
+        @test m["eleitorado_apurado"] == 384582
+
+        # sem candidatos: mesmo esquema
+        data["carg"][1]["agr"] = []
+        empty_df = BRElections._parse_live_results(data)
+        @test nrow(empty_df) == 0 && names(empty_df) == names(df)
+    end
+
+    @testset "live_results — municípios, URL e validações (offline)" begin
+        mun = DataFrame(sg_uf = ["RJ", "RJ", "RJ"], cd_municipio = [60011, 58858, 58130],
+                        cd_municipio_ibge = [3304557, 3304300, 3300704],
+                        nm_municipio = ["RIO DE JANEIRO", "RIO BONITO", "CABO FRIO"],
+                        capital = [true, false, false], zonas = [[1], [2], [3]])
+        resolve(q) = BRElections._resolve_municipality(mun, q).cd_municipio
+        @test resolve("Rio de Janeiro") == 60011          # nome exato vence o trecho
+        @test resolve("  rio de janeiro ") == 60011
+        @test resolve("bonito") == 58858                  # trecho único
+        @test resolve("cabo frio") == 58130
+        @test resolve(60011) == 60011 && resolve("60011") == 60011   # código TSE
+        @test resolve(3304300) == 58858                   # código IBGE
+        @test_throws ArgumentError resolve("rio")         # ambíguo
+        @test_throws ArgumentError resolve("Niterói")
+
+        @test BRElections._live_results_url("ele2026", "6257", 1, "br", nothing) ==
+              "https://resultados.tse.jus.br/oficial/ele2026/6257/dados/br/br-c0001-e006257-u.json"
+        @test BRElections._live_results_url("ele2024", "619", 11, "sp", 1120) ==
+              "https://resultados.tse.jus.br/oficial/ele2024/619/dados/sp/sp01120-c0011-e000619-u.json"
+
+        @test BRElections._office_code(:mayor) == 11 && BRElections._office_code(6) == 6
+        @test_throws ArgumentError live_results(:prefeito)
+        @test_throws ArgumentError live_results(:governor)                            # falta uf
+        @test_throws ArgumentError live_results(:mayor; uf = "SP")                    # falta município
+        @test_throws ArgumentError live_results(:president; municipality = "Recife")   # falta uf
+        @test_throws ArgumentError live_results(:governor; uf = "XX")
+    end
+
     @testset "url_exists — erro de rede/URL retorna false" begin
         @test BRElections.url_exists("not a valid url") == false
         @test BRElections.url_status("not a valid url") == 0
@@ -690,6 +799,16 @@ end
                 @test allunique(skipmissing(mun.cd_municipio_ibge))
                 pe = municipalities(uf = "pe", verbose = false)
                 @test all(==("PE"), pe.sg_uf) && 30015 in pe.cd_municipio   # Fernando de Noronha
+
+                # Apuração (Divulgação de Resultados): eleição já totalizada
+                sp = live_results(:mayor; uf = "SP", municipality = "São Paulo", verbose = false)
+                @test metadata(sp, "totalizacao_final")
+                @test metadata(sp, "abrangencia") == "SÃO PAULO - SP"
+                @test count(sp.eleito) == 1 && first(sp.eleito)
+                @test sum(sp.pc_votos) ≈ 100 atol = 0.01
+                br = live_results(:president; verbose = false)
+                @test nrow(br) > 0 && metadata(br, "abrangencia") == "BR"
+                @test metadata(br, "secoes") > 400_000
             end
         end
     else

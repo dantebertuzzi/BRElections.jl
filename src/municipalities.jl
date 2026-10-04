@@ -27,26 +27,62 @@ function _fetch_resultados_json(url; force, check_updates, verbose)
     JSON.parse(read(path, String))
 end
 
+# Uma eleição do catálogo `ele-c.json`, já com a data convertida.
+_election_entry(pl, e) = (ciclo = pl["c"], ele = e["cd"], nome = get(e, "nm", ""),
+                          dt = Date(pl["dt"], dateformat"dd/mm/yyyy"), abr = e["abr"])
+
+_has_office(abr, cargo::Int) = any(cp -> parse(Int, cp["cd"]) == cargo, get(abr, "cp", ()))
+
+"""
+    _find_election(config, cargo; uf = nothing, municipality = nothing, today = today()) -> NamedTuple
+
+Escolhe, no catálogo `ele-c.json`, a eleição mais recente que tenha o cargo
+`cargo` e cubra o local pedido. Uma abrangência cobre o local se for `br`, ou
+a própria UF; quando ela lista municípios (2º turno municipal, eleições
+suplementares), o município (código TSE) precisa estar na lista — e, sem
+município, ela não serve.
+
+Eleições com data posterior a `today` só são escolhidas se não houver
+nenhuma já realizada (evita trocar o 1º turno por um 2º turno ainda zerado).
+Devolve `(ciclo, ele, nome, dt, abr)`.
+"""
+function _find_election(config, cargo::Int;
+                        uf::Union{Nothing,AbstractString} = nothing,
+                        municipality::Union{Nothing,Integer} = nothing,
+                        today::Date = Dates.today())
+    u = uf === nothing ? nothing : lowercase(uf)
+    covers(abr) = begin
+        _has_office(abr, cargo) || return false
+        abr["cd"] == "br" && return true
+        (u === nothing || abr["cd"] != u) && return false
+        muns = get(abr, "mu", ())
+        isempty(muns) && return true
+        municipality !== nothing && any(m -> parse(Int, m["cd"]) == municipality, muns)
+    end
+    found = [_election_entry(pl, e) for pl in config["pl"] for e in pl["e"] if any(covers, e["abr"])]
+    isempty(found) && throw(ArgumentError(
+        "Nenhuma eleição com o cargo $cargo" *
+        (u === nothing ? "" : " em $(uppercase(u))") *
+        (municipality === nothing ? "" : " (município $municipality)") *
+        " no catálogo da Divulgação de Resultados do TSE ($(RESULTADOS_CONFIG_URL))."))
+    past = filter(x -> x.dt <= today, found)
+    isempty(past) ? argmin(x -> x.dt, found) : argmax(x -> x.dt, past)
+end
+
 """
     _latest_general_election(config) -> (ciclo, cd_eleicao)
 
-Procura, no catálogo `ele-c.json`, a eleição mais recente com o cargo de
-Presidente, isto é, a eleição geral (federal).
+A eleição geral (federal) mais recente: a que tem o cargo de Presidente.
 """
 function _latest_general_election(config)
-    best = nothing
-    for pl in config["pl"], e in pl["e"]
-        has_president = any(e["abr"]) do abr
-            any(cp -> parse(Int, cp["cd"]) == CARGO_PRESIDENTE, get(abr, "cp", ()))
-        end
-        has_president || continue
-        dt = Date(pl["dt"], dateformat"dd/mm/yyyy")
-        (best === nothing || dt > best.dt) && (best = (ciclo = pl["c"], ele = e["cd"], dt = dt))
+    e = try
+        _find_election(config, CARGO_PRESIDENTE; today = typemax(Date))
+    catch err
+        err isa ArgumentError || rethrow()
+        error("Nenhuma eleição geral encontrada no catálogo da Divulgação de Resultados " *
+              "do TSE ($(RESULTADOS_CONFIG_URL)); o formato do arquivo pode ter mudado.")
     end
-    best === nothing && error(
-        "Nenhuma eleição geral encontrada no catálogo da Divulgação de Resultados do TSE " *
-        "($(RESULTADOS_CONFIG_URL)); o formato do arquivo pode ter mudado.")
-    (best.ciclo, best.ele)
+    (e.ciclo, e.ele)
 end
 
 _municipalities_url(ciclo, ele) =
@@ -126,4 +162,34 @@ function municipalities(; uf::Union{Nothing,AbstractString} = nothing,
 
     df = _parse_municipalities(data)
     u === nothing ? df : subset(df, :sg_uf => ByRow(==(u)))
+end
+
+_normalize_name(s) = Unicode.normalize(strip(s); stripmark = true, casefold = true)
+
+"""
+    _resolve_municipality(mun, query) -> DataFrameRow
+
+Acha `query` na tabela `mun` (de [`municipalities`](@ref), já restrita a uma
+UF). `query` pode ser o código TSE, o código IBGE (7 dígitos) ou o nome —
+sem distinção de acentos e maiúsculas; um trecho do nome basta se for único.
+"""
+function _resolve_municipality(mun::AbstractDataFrame, query::Union{Integer,AbstractString})
+    uf = isempty(mun) ? "?" : first(mun.sg_uf)
+    q = query isa AbstractString ? strip(query) : query
+    hits = if q isa Integer || all(isdigit, q)
+        code = q isa Integer ? q : parse(Int, q)
+        findall(r -> r.cd_municipio == code || isequal(r.cd_municipio_ibge, code), eachrow(mun))
+    else
+        name = _normalize_name(q)
+        names = _normalize_name.(mun.nm_municipio)
+        exact = findall(==(name), names)
+        isempty(exact) ? findall(n -> occursin(name, n), names) : exact
+    end
+    isempty(hits) && throw(ArgumentError("Município \"$query\" não encontrado em $uf."))
+    if length(hits) > 1
+        options = join(("  $(r.cd_municipio)  $(r.nm_municipio)" for r in eachrow(mun[first(hits, 15), :])), "\n")
+        throw(ArgumentError("\"$query\" é ambíguo em $uf ($(length(hits)) municípios). " *
+                            "Use o nome completo ou o código:\n$options"))
+    end
+    mun[only(hits), :]
 end

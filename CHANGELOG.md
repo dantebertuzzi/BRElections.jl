@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `live_results(office; uf, municipality, election)`: vote counting straight
+  from the TSE's results system (`resultados.tse.jus.br`), updated every few
+  minutes on election night and never cached. Covers every office, from
+  president to councillor, for Brazil, a state, a municipality (by name, TSE or
+  IBGE code) or abroad. The election is picked automatically: the latest one
+  already held that has the office and covers the place, which handles runoffs
+  and supplementary elections. Returns one row per candidate; the count summary
+  (polling stations counted, turnout, valid/blank/null votes, update time) is in
+  the `DataFrame` metadata.
+- `examples/live_results.jl`: a terminal dashboard for election night, built on
+  `live_results` and PrettyTables, with `--watch` to refresh it.
+
 - `municipalities()`: crosswalk between the TSE municipality code
   (`cd_municipio`, used in every TSE file) and the IBGE code, with name, state,
   capital flag and electoral zones. It comes from the TSE's results system
@@ -28,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- DataFrames compat raised to 1.4, the first version with metadata, used by
+  `live_results`. Adds the `Unicode` stdlib as a dependency.
 - The `filter` predicate accepts column names in either case: `row.nr_turno`,
   matching the returned `DataFrame`, or `row.NR_TURNO`, matching the TSE file.
   Before, only the uppercase names worked, even though the result comes with
