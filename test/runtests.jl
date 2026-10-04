@@ -564,6 +564,49 @@ end
         end
     end
 
+    @testset "municipalities — catálogo e parsing (offline)" begin
+        # Formato real do ele-c.json, reduzido: a eleição geral mais recente é
+        # a que tem o cargo 1 (Presidente), não a mais recente de todas.
+        config = BRElections.JSON.parse("""
+            { "pl" : [
+              { "c" : "ele2022", "dt" : "02/10/2022", "e" : [
+                { "cd" : "544", "abr" : [ { "cd" : "br", "cp" : [ { "cd" : "1", "ds" : "Presidente" } ] } ] } ] },
+              { "c" : "ele2024", "dt" : "06/10/2024", "e" : [
+                { "cd" : "619", "abr" : [ { "cd" : "br", "cp" : [ { "cd" : "11", "ds" : "Prefeito" } ] } ] } ] },
+              { "c" : "ele2026", "dt" : "04/10/2026", "e" : [
+                { "cd" : "6257", "abr" : [ { "cd" : "br", "cp" : [ { "cd" : "1", "ds" : "Presidente" } ] } ] },
+                { "cd" : "6259", "abr" : [ { "cd" : "br", "cp" : [ { "cd" : "3", "ds" : "Governador" } ] } ] } ] },
+              { "c" : "ele2024", "dt" : "21/06/2026", "e" : [
+                { "cd" : "6280", "abr" : [ { "cd" : "sp", "mu" : [], "cp" : [ { "cd" : "11", "ds" : "Prefeito" } ] } ] } ] } ] }
+            """)
+        @test BRElections._latest_general_election(config) == ("ele2026", "6257")
+        @test BRElections._municipalities_url("ele2026", "6257") ==
+              "https://resultados.tse.jus.br/oficial/ele2026/6257/config/mun-e006257-cm.json"
+        @test_throws ErrorException BRElections._latest_general_election(BRElections.JSON.parse("""{ "pl" : [] }"""))
+
+        data = BRElections.JSON.parse("""
+            { "abr" : [
+              { "cd" : "pe", "ds" : "PERNAMBUCO", "mu" : [
+                { "cd" : "25313", "cdi" : "2611606", "nm" : "RECIFE", "c" : "s", "z" : [ "0149", "0001" ] },
+                { "cd" : "30015", "cdi" : "2605459", "nm" : "FERNANDO DE NORONHA", "c" : "n", "z" : [ "0004" ] } ] },
+              { "cd" : "ac", "ds" : "ACRE", "mu" : [
+                { "cd" : "01120", "cdi" : "1200013", "nm" : "ACRELÂNDIA", "c" : "n", "z" : [ "0008" ] } ] },
+              { "cd" : "zz", "ds" : "EXTERIOR", "mu" : [
+                { "cd" : "29254", "cdi" : "", "nm" : "ABIDJÃ", "c" : "n", "z" : [ "0001" ] } ] } ] }
+            """)
+        df = BRElections._parse_municipalities(data)
+        @test names(df) == ["sg_uf", "cd_municipio", "cd_municipio_ibge", "nm_municipio", "capital", "zonas"]
+        @test df.sg_uf == ["AC", "PE", "PE", "ZZ"]                  # ordenado por UF e nome
+        @test df.cd_municipio == [1120, 30015, 25313, 29254]        # Int, sem zeros à esquerda (como nos CSVs)
+        @test isequal(df.cd_municipio_ibge, [1200013, 2605459, 2611606, missing])
+        @test df.capital == [false, false, true, false]
+        @test df.zonas[3] == [1, 149]
+        @test eltype(df.cd_municipio) == Int
+
+        @test_throws ArgumentError municipalities(uf = "BR")
+        @test_throws ArgumentError municipalities(uf = "XX")
+    end
+
     @testset "url_exists — erro de rede/URL retorna false" begin
         @test BRElections.url_exists("not a valid url") == false
         @test BRElections.url_status("not a valid url") == 0
@@ -636,6 +679,17 @@ end
                 BRElections._write_meta(zippath, Dict("etag" => "\"versao-antiga\""))
                 @test_logs (:info, r"nova versão") match_mode = :any vacancies(2022)
                 @test BRElections._read_meta(zippath)["etag"] != "\"versao-antiga\""
+
+                # Correspondência TSE ↔ IBGE
+                mun = municipalities(verbose = false)
+                @test nrow(mun) > 5_500
+                @test count(mun.capital) == 27
+                sp = only(subset(mun, :cd_municipio => ByRow(==(71072))))
+                @test (sp.sg_uf, sp.cd_municipio_ibge, sp.nm_municipio) == ("SP", 3550308, "SÃO PAULO")
+                @test all(ismissing, subset(mun, :sg_uf => ByRow(==("ZZ"))).cd_municipio_ibge)
+                @test allunique(skipmissing(mun.cd_municipio_ibge))
+                pe = municipalities(uf = "pe", verbose = false)
+                @test all(==("PE"), pe.sg_uf) && 30015 in pe.cd_municipio   # Fernando de Noronha
             end
         end
     else

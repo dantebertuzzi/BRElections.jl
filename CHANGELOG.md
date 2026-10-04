@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `municipalities()`: crosswalk between the TSE municipality code
+  (`cd_municipio`, used in every TSE file) and the IBGE code, with name, state,
+  capital flag and electoral zones. It comes from the TSE's results system
+  (`resultados.tse.jus.br`) for the latest general election, which covers every
+  municipality (Brasília and Fernando de Noronha included, unlike municipal
+  elections) and the cities abroad. Cached and revalidated like the other files.
+  Adds JSON.jl as a dependency.
+
 - Cache revalidation. The TSE regenerates its files often, past elections
   included, without changing their URLs, and a cached ZIP used to be reused
   forever. Each download now stores the file's `ETag`, `Last-Modified` and

@@ -21,6 +21,12 @@ voter_profile
 read_tse_csv
 ```
 
+## Municípios
+
+```@docs
+municipalities
+```
+
 ## Descoberta de arquivos
 
 ```@docs

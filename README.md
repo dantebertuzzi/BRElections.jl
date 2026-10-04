@@ -21,6 +21,9 @@ authorisation is required.
 - Automatic download of TSE ZIPs, with retry logic and atomic writes;
 - Portable local cache (Windows/Linux/macOS) via Scratch.jl, configurable through
   the `BRElections_CACHE` environment variable or `set_cache_dir!`;
+- Cache revalidation: files the TSE republishes are downloaded again, and only
+  then;
+- TSE ↔ IBGE municipality code crosswalk (`municipalities`);
 - Discovery of published files by year (`available_files`);
 - ZIP decompression with on-the-fly ISO-8859-1 → UTF-8 transcoding;
 - Efficient import of large CSVs (CSV.jl, multithreaded, chunk-based reading);
@@ -84,6 +87,23 @@ df = elections(2020; type = :assets, uf = "PE")
 | `:voter_profile`         | `perfil_eleitorado`        | Electorate profile                            |
 
 † Partitioned by state on the TSE CDN — the `uf` argument is mandatory.
+
+### Municipalities: TSE ↔ IBGE codes
+
+TSE files identify municipalities by the court's own code (`cd_municipio`), not
+the IBGE one, so they can't be joined with Census, municipal GDP and other IBGE
+data directly. `municipalities()` returns the crosswalk, taken from the TSE's
+results system for the latest general election: every municipality, including
+Brasília and Fernando de Noronha, plus the cities abroad where Brazilians vote
+(`sg_uf = "ZZ"`, no IBGE code).
+
+```julia
+mun = municipalities()             # sg_uf, cd_municipio, cd_municipio_ibge,
+                                   # nm_municipio, capital, zonas
+votes = candidate_votes(2022; uf = "PE")
+votes = leftjoin(votes, select(mun, :cd_municipio, :cd_municipio_ibge);
+                 on = :cd_municipio)
+```
 
 ### Cache
 
