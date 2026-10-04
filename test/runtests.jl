@@ -467,6 +467,103 @@ end
         @test_logs (:info,) cb(1000, 250)           # cruza 20%: loga de novo
     end
 
+    @testset "Revalidação do cache — _cache_is_stale" begin
+        stale = BRElections._cache_is_stale
+        t = DateTime(2026, 10, 1, 12)
+        # ETag decide quando os dois lados têm
+        @test !stale(Dict("etag" => "\"a\""), Dict("etag" => "\"a\"", "last-modified" => "x"), t)
+        @test stale(Dict("etag" => "\"a\""), Dict("etag" => "\"b\""), t)
+        # sem ETag: Last-Modified / Content-Length
+        @test stale(Dict("last-modified" => "A"), Dict("last-modified" => "B"), t)
+        @test stale(Dict("content-length" => "10"), Dict("content-length" => "11"), t)
+        @test !stale(Dict("content-length" => "10"), Dict("content-length" => "10"), t)
+        # cache antigo, sem .meta: Last-Modified remoto contra o mtime local
+        @test stale(Dict{String,String}(), Dict("last-modified" => "Sun, 04 Oct 2026 06:23:34 GMT"), t)
+        @test !stale(Dict{String,String}(), Dict("last-modified" => "Mon, 01 Jan 2024 00:00:00 GMT"), t)
+        # sem informação suficiente (ou data ilegível): mantém o cache
+        @test !stale(Dict{String,String}(), Dict{String,String}(), t)
+        @test !stale(Dict{String,String}(), Dict("last-modified" => "ontem"), t)
+    end
+
+    @testset "Revalidação do cache — arquivo .meta" begin
+        dest = joinpath(mktempdir(), "x.zip")
+        write(dest, "zip")
+        meta = Dict("etag" => "\"2ce96-65cf\"", "last-modified" => "Sun, 04 Oct 2026 06:23:34 GMT",
+                    "content-length" => "183958")
+        BRElections._write_meta(dest, meta)
+        @test BRElections._read_meta(dest) == meta
+        BRElections._write_meta(dest, Dict{String,String}())   # sem validadores: remove
+        @test !isfile(BRElections._meta_path(dest))
+        @test isempty(BRElections._read_meta(dest))
+    end
+
+    @testset "download_file — check_updates" begin
+        dest = joinpath(mktempdir(), "test.zip")
+        write(dest, "cache")
+        # sem rede: avisa e usa o cache
+        r = @test_logs (:warn, r"Não foi possível verificar") BRElections.download_file(
+            "http://url-falsa.tse/test.zip", dest; retries = 1)
+        @test read(r, String) == "cache"
+        # check_updates = false: nem consulta a rede
+        r = @test_logs (:info, r"Cache") BRElections.download_file(
+            "http://url-falsa.tse/test.zip", dest; check_updates = false)
+        @test read(r, String) == "cache"
+    end
+
+    @testset "extract_csvs — reextrai quando o ZIP é mais novo" begin
+        dir = mktempdir()
+        zippath = make_fixture_zip(dir)
+        csv = only(BRElections.extract_csvs(zippath))
+        write(csv, "adulterado")
+        # CSV mais novo que o ZIP: reaproveitado
+        @test read(only(BRElections.extract_csvs(zippath)), String) == "adulterado"
+        # ZIP atualizado (como após um novo download): reextrai
+        touch(csv); sleep(1.1); touch(zippath)
+        @test startswith(read(only(BRElections.extract_csvs(zippath)), String), "DT_GERACAO")
+    end
+
+    @testset "filter — nomes em qualquer caixa e sem avisos espúrios" begin
+        dir = mktempdir()
+        csv = only(BRElections.extract_csvs(make_fixture_zip(dir)))
+        for pred in (row -> row.nr_turno == 1 && row.sg_uf == "PE",          # como no resultado
+                     row -> row.NR_TURNO == 1 && row.SG_UF == "PE",          # como no arquivo
+                     row -> row[:nr_turno] == 1 && row["SG_UF"] == "PE")     # indexação
+            df = @test_logs min_level = Base.CoreLogging.Warn read_tse_csv(csv; filter = pred)
+            @test nrow(df) == 2
+        end
+        # também com normalize_names = false
+        df = read_tse_csv(csv; normalize_names = false, filter = row -> row.nr_turno == 2)
+        @test nrow(df) == 1 && "NR_TURNO" in names(df)
+        # coluna inexistente continua dando erro
+        @test_throws ArgumentError read_tse_csv(csv; filter = row -> row.nao_existe == 1)
+        # erro do próprio predicado não é engolido
+        @test_throws DomainError read_tse_csv(csv; filter = row -> throw(DomainError(1)))
+    end
+
+    @testset "filter — caminho em chunks" begin
+        # Força o caminho de CSV.Chunks com um arquivo grande o suficiente.
+        dir = mktempdir()
+        csv = joinpath(dir, "grande.csv")
+        open(csv, "w") do io
+            println(io, "NR_TURNO;SG_UF;QT")
+            for i in 1:20_000
+                println(io, isodd(i) ? 1 : 2, ';', i % 3 == 0 ? "PE" : "BA", ';', i)
+            end
+        end
+        old = BRElections.CHUNK_MIN_BYTES[]
+        BRElections.CHUNK_MIN_BYTES[] = 0
+        try
+            df = read_tse_csv(csv; filter = row -> row.nr_turno == 1 && row.SG_UF == "PE", ntasks = 4)
+            @test nrow(df) == count(i -> isodd(i) && i % 3 == 0, 1:20_000)
+            @test names(df) == ["nr_turno", "sg_uf", "qt"]
+            # ArgumentError do usuário não é confundido com falha de particionamento
+            @test_throws ArgumentError read_tse_csv(csv; ntasks = 4,
+                filter = row -> throw(ArgumentError("do usuário")))
+        finally
+            BRElections.CHUNK_MIN_BYTES[] = old
+        end
+    end
+
     @testset "url_exists — erro de rede/URL retorna false" begin
         @test BRElections.url_exists("not a valid url") == false
         @test BRElections.url_status("not a valid url") == 0
@@ -527,6 +624,18 @@ end
 
                 pe = vacancies(2022; uf = "PE", verbose = false)
                 @test all(==("PE"), skipmissing(pe.sg_uf))
+
+                # Revalidação: o download grava os validadores; com o cache em
+                # dia, a próxima chamada não baixa de novo.
+                zippath = BRElections._zip_path(:vacancies, probe_url)
+                @test haskey(BRElections._read_meta(zippath), "etag")
+                before = mtime(zippath)
+                @test_logs (:info, r"em dia") match_mode = :any vacancies(2022)
+                @test mtime(zippath) == before
+                # ETag local diferente do publicado: baixa a versão nova
+                BRElections._write_meta(zippath, Dict("etag" => "\"versao-antiga\""))
+                @test_logs (:info, r"nova versão") match_mode = :any vacancies(2022)
+                @test BRElections._read_meta(zippath)["etag"] != "\"versao-antiga\""
             end
         end
     else

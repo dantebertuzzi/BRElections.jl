@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Cache revalidation. The TSE regenerates its files often, past elections
+  included, without changing their URLs, and a cached ZIP used to be reused
+  forever. Each download now stores the file's `ETag`, `Last-Modified` and
+  `Content-Length` in `<zip>.meta`; on later calls a `HEAD` request checks
+  whether the TSE published a new version and downloads it only then. Without
+  network access the cached copy is used, with a warning. Caches created by
+  earlier versions (no `.meta`) are checked by `Last-Modified`. The new
+  `check_updates = false` keyword skips the check.
+
+### Changed
+
+- The `filter` predicate accepts column names in either case: `row.nr_turno`,
+  matching the returned `DataFrame`, or `row.NR_TURNO`, matching the TSE file.
+  Before, only the uppercase names worked, even though the result comes with
+  lowercase names. Examples in the docs now use the lowercase names.
+
+### Fixed
+
+- CSVs extracted from an older version of a ZIP are re-extracted when the ZIP
+  is updated, instead of being reused.
+- Reading small files no longer logs a spurious `Falha ao dividir arquivo em
+  chunks` warning (nor CSV.jl's `ntasks > 1` warning): files under 64 MiB are
+  filtered in memory, and files under 1 MiB are parsed with a single task.
+- An `ArgumentError` thrown by the user's `filter` predicate is propagated
+  instead of being mistaken for a chunking failure and silently retried.
+
 ## [0.1.1] - 2026-08-31
 
 ### Added

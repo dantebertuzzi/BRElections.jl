@@ -47,7 +47,9 @@ end
 
 Extrai os arquivos tabulares (`.csv`/`.txt`, ignorando `leiame`) de um ZIP
 do TSE para `dest`, transcodificando o conteúdo de ISO-8859-1 para UTF-8 na
-extração. Arquivos já extraídos são reaproveitados (cache), salvo `force = true`.
+extração. Arquivos já extraídos são reaproveitados (cache), salvo
+`force = true` ou quando o ZIP é mais novo que eles (o TSE publicou outra
+versão e [`download_file`](@ref) a baixou).
 
 Só as entradas do ZIP realmente necessárias são descompactadas: se `uf` for
 informada, apenas os arquivos daquela UF; senão, o `_BRASIL.csv` (se
@@ -74,7 +76,7 @@ function extract_csvs(zippath::AbstractString;
         for entry in entries
             entry.name in wanted || continue
             target = joinpath(dest, basename(entry.name))
-            if force || !isfile(target)
+            if force || !isfile(target) || mtime(target) < mtime(zippath)
                 data = ensure_utf8(read(entry))
                 tmp = target * ".part"
                 write(tmp, data)

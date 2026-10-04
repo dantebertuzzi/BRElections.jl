@@ -41,9 +41,9 @@ vagas = vacancies(2022)
 
 # Votação nominal de deputado federal em PE, 1º turno
 df = candidate_votes(2022; uf = "PE",
-        columns = ["NR_TURNO", "CD_CARGO", "NM_URNA_CANDIDATO",
-                   "SG_PARTIDO", "QT_VOTOS_NOMINAIS"],
-        filter  = row -> row.NR_TURNO == 1 && row.CD_CARGO == 6)
+        columns = ["nr_turno", "cd_cargo", "nm_urna_candidato",
+                   "sg_partido", "qt_votos_nominais"],
+        filter  = row -> row.nr_turno == 1 && row.cd_cargo == 6)
 
 combine(groupby(df, :sg_partido), :qt_votos_nominais => sum => :votos)
 ```

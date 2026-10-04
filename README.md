@@ -57,9 +57,9 @@ cand = candidates(2022)
 # The filter is applied during reading (chunks) — only matching rows
 # are kept in memory.
 pe = candidate_votes(2022; uf = "PE",
-        columns = ["NR_TURNO", "NM_MUNICIPIO", "NM_URNA_CANDIDATO",
-                   "SG_PARTIDO", "QT_VOTOS_NOMINAIS"],
-        filter  = row -> row.NR_TURNO == 1)
+        columns = ["nr_turno", "nm_municipio", "nm_urna_candidato",
+                   "sg_partido", "qt_votos_nominais"],
+        filter  = row -> row.nr_turno == 1)
 
 # Votes by electoral section (the TSE publishes one ZIP per state)
 sec = section_votes(2022; uf = "PE")
@@ -95,6 +95,17 @@ clear_cache!()       # wipe all cached data
 
 The `BRElections_CACHE` environment variable sets the directory at package load
 time.
+
+The TSE regenerates its files often — including those of past elections —
+without changing their URLs. So, when a ZIP is already cached, each call makes
+a `HEAD` request and downloads it again only if the published file changed
+(by `ETag`, `Last-Modified` and `Content-Length`). Without network access, the
+cached copy is used. Pass `check_updates = false` to skip the check and keep
+working with the version you already have:
+
+```julia
+df = candidates(2022; check_updates = false)
+```
 
 ## Tests
 

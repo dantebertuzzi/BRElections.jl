@@ -48,18 +48,136 @@ function _progress_callback()
     end
 end
 
-"""
-    download_file(url, dest; force = false, retries = 3, verbose = true) -> String
+# ---------------------------------------------------------------------------
+# Revalidação do cache
+#
+# O TSE regera os arquivos com frequência (inclusive de eleições antigas), sem
+# mudar a URL. Junto de cada ZIP baixado guardamos os validadores HTTP da
+# versão obtida (`ETag`, `Last-Modified`, `Content-Length`) num arquivo
+# `<zip>.meta`; antes de reaproveitar o cache, um `HEAD` diz se o TSE publicou
+# outra versão.
+# ---------------------------------------------------------------------------
 
-Baixa `url` para `dest` com cache (retorna imediatamente se `dest` já existe
-e `force = false`), escrita atômica (arquivo temporário `.part` movido ao
-final) e novas tentativas com *backoff* exponencial.
+const _VALIDATORS = ("etag", "last-modified", "content-length")
+
+_meta_path(dest::AbstractString) = dest * ".meta"
+
+"""
+    remote_validators(url) -> (status, Dict{String,String})
+
+Faz um `HEAD` em `url` e devolve o código HTTP (`0` se não houve resposta) e
+os cabeçalhos de validação presentes (`etag`, `last-modified`,
+`content-length`), com nomes em minúsculas.
+"""
+function remote_validators(url::AbstractString)
+    resp = try
+        Downloads.request(url; method = "HEAD", throw = false)
+    catch
+        nothing
+    end
+    resp isa Downloads.Response || return (0, Dict{String,String}())
+    meta = Dict{String,String}()
+    for (k, v) in resp.headers
+        key = lowercase(k)
+        key in _VALIDATORS && (meta[key] = v)
+    end
+    (resp.status, meta)
+end
+
+function _read_meta(dest::AbstractString)
+    path = _meta_path(dest)
+    meta = Dict{String,String}()
+    isfile(path) || return meta
+    for line in eachline(path)
+        parts = split(line, '\t'; limit = 2)
+        length(parts) == 2 && (meta[String(parts[1])] = String(parts[2]))
+    end
+    meta
+end
+
+function _write_meta(dest::AbstractString, meta::AbstractDict)
+    isempty(meta) && return rm(_meta_path(dest); force = true)
+    open(_meta_path(dest), "w") do io
+        for k in _VALIDATORS
+            haskey(meta, k) && println(io, k, '\t', meta[k])
+        end
+    end
+end
+
+const _HTTP_DATE = dateformat"e, dd u yyyy HH:MM:SS \G\M\T"
+
+_parse_http_date(s) = try
+    DateTime(strip(s), _HTTP_DATE)
+catch
+    nothing
+end
+
+"""
+    _cache_is_stale(local_meta, remote_meta, local_mtime) -> Bool
+
+Decide se o arquivo em cache está desatualizado em relação ao publicado.
+Compara `ETag` quando ambos os lados o têm; senão `Last-Modified` e
+`Content-Length`. Para caches antigos, sem `.meta`, usa o `Last-Modified`
+remoto contra o `mtime` local (`local_mtime`, em `DateTime` UTC). Sem
+informação suficiente, considera o cache válido.
+"""
+function _cache_is_stale(local_meta::AbstractDict, remote_meta::AbstractDict, local_mtime::DateTime)
+    if haskey(local_meta, "etag") && haskey(remote_meta, "etag")
+        return local_meta["etag"] != remote_meta["etag"]
+    end
+    for k in ("last-modified", "content-length")
+        if haskey(local_meta, k) && haskey(remote_meta, k)
+            local_meta[k] != remote_meta[k] && return true
+        end
+    end
+    if isempty(local_meta) && haskey(remote_meta, "last-modified")
+        remote = _parse_http_date(remote_meta["last-modified"])
+        return remote !== nothing && remote > local_mtime
+    end
+    false
+end
+
+"""
+    download_file(url, dest; force = false, check_updates = true, retries = 3, verbose = true) -> String
+
+Baixa `url` para `dest` com cache, escrita atômica (arquivo temporário
+`.part` movido ao final) e novas tentativas com *backoff* exponencial.
+
+Se `dest` já existe e `force = false`:
+
+- com `check_updates = true` (padrão), faz um `HEAD` e só baixa de novo se o
+  TSE publicou outra versão (`ETag`/`Last-Modified`/`Content-Length`
+  diferentes dos guardados em `<dest>.meta`). Sem rede ou com o CDN
+  recusando, usa o cache e avisa;
+- com `check_updates = false`, usa o cache sem consultar a rede.
 """
 function download_file(url::AbstractString, dest::AbstractString;
-                       force::Bool = false, retries::Int = 3, verbose::Bool = true)
+                       force::Bool = false, check_updates::Bool = true,
+                       retries::Int = 3, verbose::Bool = true)
+    remote_meta = nothing
     if isfile(dest) && !force
-        verbose && @info "Cache: usando arquivo já baixado" dest
-        return dest
+        if !check_updates
+            verbose && @info "Cache: usando arquivo já baixado" dest
+            return dest
+        end
+        status, remote_meta = remote_validators(url)
+        if !(200 <= status < 300)
+            what = status == 404 ? "o arquivo não está mais publicado (HTTP 404)" :
+                   status == 0   ? "sem resposta do servidor" :
+                                   "o CDN respondeu HTTP $status"
+            verbose && @warn "Não foi possível verificar se há versão nova no TSE ($what); " *
+                             "usando o arquivo em cache." dest
+            return dest
+        end
+        local_mtime = unix2datetime(mtime(dest))
+        if !_cache_is_stale(_read_meta(dest), remote_meta, local_mtime)
+            # Cache antigo sem `.meta`: registra os validadores agora, para que
+            # as próximas verificações comparem por ETag.
+            isfile(_meta_path(dest)) || _write_meta(dest, remote_meta)
+            verbose && @info "Cache: arquivo em dia com o TSE" dest
+            return dest
+        end
+        verbose && @info "O TSE publicou uma nova versão; baixando novamente." url get(remote_meta, "last-modified", "?")
     end
     mkpath(dirname(dest))
     tmp = dest * ".part"
@@ -70,6 +188,10 @@ function download_file(url::AbstractString, dest::AbstractString;
             Downloads.download(url, tmp;
                 progress = verbose ? _progress_callback() : nothing)
             mv(tmp, dest; force = true)
+            # Validadores da versão baixada: reaproveita os do HEAD acima, se
+            # houve; senão consulta agora (falha aqui não invalida o download).
+            meta = remote_meta === nothing ? last(remote_validators(url)) : remote_meta
+            _write_meta(dest, meta)
             return dest
         catch e
             err = e

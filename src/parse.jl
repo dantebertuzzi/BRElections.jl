@@ -12,6 +12,9 @@ const TSE_DATEFORMAT = dateformat"dd/mm/yyyy"
 # ou por serem identificadores, não quantidades.
 const STRING_PREFIXES = ("NR_CPF", "NR_TITULO", "NR_PROCESSO", "NR_PROTOCOLO")
 
+# Abaixo deste tamanho a leitura sem filtro é feita com uma única task.
+const PARALLEL_MIN_BYTES = 2^20
+
 _force_string(name::AbstractString) = any(p -> startswith(uppercase(name), p), STRING_PREFIXES)
 
 # Função `types` passada ao CSV.jl: força String nas colunas de identificadores.
@@ -48,8 +51,10 @@ sentinelas `#NULO#`/`#NE#` convertidas em `missing` e identificadores
 - `columns = nothing`: vetor de nomes (String/Symbol, sem distinção de
   maiúsculas) a importar — as demais colunas nem são materializadas.
 - `filter = nothing`: predicado `row -> Bool` aplicado durante a importação.
-  Quando fornecido, o arquivo é lido em *chunks* (`CSV.Chunks`), de modo que
-  apenas as linhas aprovadas ocupam memória.
+  As colunas podem ser acessadas tanto pelo nome normalizado (`row.nr_turno`,
+  o mesmo do `DataFrame` devolvido) quanto pelo original do TSE
+  (`row.NR_TURNO`). Em arquivos grandes, a leitura é feita em *chunks*
+  (`CSV.Chunks`), de modo que apenas as linhas aprovadas ocupam memória.
 - `normalize_names = true`: converte os nomes das colunas para minúsculas.
 - `ntasks = Threads.nthreads()`: paralelismo de leitura/chunks.
 
@@ -57,8 +62,8 @@ sentinelas `#NULO#`/`#NE#` convertidas em `missing` e identificadores
 
 ```julia
 df = read_tse_csv("consulta_cand_2022_PE.csv";
-                  columns = [:NR_TURNO, :NM_URNA_CANDIDATO, :SG_PARTIDO],
-                  filter  = row -> row.NR_TURNO == 1)
+                  columns = [:nr_turno, :nm_urna_candidato, :sg_partido],
+                  filter  = row -> row.nr_turno == 1)
 ```
 """
 function read_tse_csv(path::AbstractString;
@@ -70,7 +75,8 @@ function read_tse_csv(path::AbstractString;
     kw = _common_csv_kwargs(; columns)
 
     df = if filter === nothing
-        CSV.read(path, DataFrame; ntasks, kw...)
+        # Em arquivos pequenos, paralelizar não ajuda e o CSV.jl emite aviso.
+        CSV.read(path, DataFrame; ntasks = filesize(path) < PARALLEL_MIN_BYTES ? 1 : ntasks, kw...)
     else
         _read_tse_csv_with_filter(path, filter, ntasks, kw)
     end
@@ -79,24 +85,53 @@ function read_tse_csv(path::AbstractString;
     df
 end
 
-# Leitura com filtro: tenta CSV.Chunks para evitar carregar tudo em memória;
-# cai para leitura completa + filter se o arquivo for pequeno demais.
+# Linha vista pelo predicado de `filter`: aceita o nome da coluna em qualquer
+# caixa (`row.nr_turno` ou `row.NR_TURNO`), já que o DataFrame devolvido usa
+# nomes em minúsculas mas o arquivo do TSE os traz em maiúsculas.
+struct _AnyCaseRow{R}
+    row::R
+end
+
+function _column_name(r::_AnyCaseRow, name)
+    row = getfield(r, :row)
+    s = Symbol(name)
+    hasproperty(row, s) && return s
+    for alt in (Symbol(lowercase(String(s))), Symbol(uppercase(String(s))))
+        hasproperty(row, alt) && return alt
+    end
+    s  # deixa o DataFrameRow produzir o erro de coluna inexistente
+end
+
+Base.getproperty(r::_AnyCaseRow, name::Symbol) = getproperty(getfield(r, :row), _column_name(r, name))
+Base.getindex(r::_AnyCaseRow, name::Union{Symbol,AbstractString}) = getfield(r, :row)[_column_name(r, name)]
+Base.hasproperty(r::_AnyCaseRow, name::Symbol) = hasproperty(getfield(r, :row), _column_name(r, name))
+Base.propertynames(r::_AnyCaseRow) = propertynames(getfield(r, :row))
+
+_apply_filter(filter, df::DataFrame) = Base.filter(row -> filter(_AnyCaseRow(row)), df)
+
+# Abaixo deste tamanho o arquivo é lido de uma vez e filtrado em memória:
+# dividi-lo em chunks não economiza nada, e o CSV.jl não consegue particionar
+# arquivos com poucas linhas. (`Ref` para os testes exercitarem os dois caminhos.)
+const CHUNK_MIN_BYTES = Ref(64 * 2^20)
+
+# Leitura com filtro: em arquivos grandes, usa CSV.Chunks para evitar carregar
+# tudo em memória; nos pequenos, lê inteiro e filtra.
 function _read_tse_csv_with_filter(path, filter, ntasks, kw)
+    filesize(path) < CHUNK_MIN_BYTES[] &&
+        return _apply_filter(filter, CSV.read(path, DataFrame; ntasks = 1, kw...))
+
     parts = DataFrame[]
-    chunk_ntasks = clamp(ntasks, 2, 4)
     try
-        for chunk in CSV.Chunks(path; ntasks = chunk_ntasks, kw...)
-            part = Base.filter(filter, DataFrame(chunk))
+        for chunk in CSV.Chunks(path; ntasks = clamp(ntasks, 2, 4), kw...)
+            part = _apply_filter(filter, DataFrame(chunk))
             nrow(part) > 0 && push!(parts, part)
         end
     catch e
-        if e isa ArgumentError
-            @warn "Falha ao dividir arquivo em chunks; lendo inteiro e filtrando em memória." path
-            df_full = CSV.read(path, DataFrame; ntasks = 1, kw...)
-            parts = [Base.filter(filter, df_full)]
-        else
-            rethrow(e)
-        end
+        # Só o caso "não deu para particionar" tem alternativa; qualquer outro
+        # ArgumentError (inclusive vindo do predicado do usuário) é propagado.
+        e isa ArgumentError && occursin("unable to iterate chunks", e.msg) || rethrow()
+        @warn "Falha ao dividir arquivo em chunks; lendo inteiro e filtrando em memória." path
+        parts = [_apply_filter(filter, CSV.read(path, DataFrame; ntasks = 1, kw...))]
     end
     isempty(parts) ? _empty_like(path, kw) : reduce(vcat, parts; cols = :union)
 end

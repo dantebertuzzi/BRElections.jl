@@ -22,8 +22,8 @@ cand = candidates(2022)
 
 # Votação por candidato/município/zona apenas em PE, com filtro na importação
 df = candidate_votes(2022; uf = "PE",
-                     columns = ["NR_TURNO", "NM_MUNICIPIO", "NM_CANDIDATO", "QT_VOTOS_NOMINAIS"],
-                     filter  = row -> row.NR_TURNO == 1)
+                     columns = ["nr_turno", "nm_municipio", "nm_candidato", "qt_votos_nominais"],
+                     filter  = row -> row.nr_turno == 1)
 ```
 
 O pacote usa apenas arquivos públicos; nenhuma API privada ou autorização
