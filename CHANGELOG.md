@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Campaign finance, 2018 onward: `campaign_finance(year; table, filer)` returns
+  candidates' or party bodies' revenue (also by original donor) and contracted
+  or paid expenses. The eight tables are also `elections` types
+  (`:candidate_revenue`, `:party_expenses_paid`, ...). The TSE packs four
+  tables in each ZIP; only the requested one is extracted, and the ZIP is
+  downloaded once for all of them. Earlier years are rejected with a pointer to
+  the raw files, since each election before 2018 has its own layout.
+- New datasets: `:candidates_complementary` (nationality, birthplace,
+  re-election, spending cap…), `:candidate_social_media`, `:cassation_reasons`
+  and `:voter_profile_section` (electorate profile by section, one ZIP per
+  state), each with a shortcut function of the same name.
+- `available_datasets()` has a `first_year` column, and asking for a dataset
+  before its first year raises an `ArgumentError` instead of a 404.
+  `available_files` skips datasets that did not exist yet in that year.
+
 - `live_results(office; uf, municipality, election)`: vote counting straight
   from the TSE's results system (`resultados.tse.jus.br`), updated every few
   minutes on election night and never cached. Covers every office, from
@@ -48,6 +63,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lowercase names. Examples in the docs now use the lowercase names.
 
 ### Fixed
+
+- Money columns (`vr_*`) written with a decimal comma (`"1500,00"`) were read
+  as `String`, e.g. `vr_bem_candidato` in `assets`. They are now `Float64`.
+  The TSE uses a decimal point in some files, so the conversion is per column
+  and accepts either; a column with any non-numeric value is left as text.
 
 - CSVs extracted from an older version of a ZIP are re-extracted when the ZIP
   is updated, instead of being reused.

@@ -75,20 +75,49 @@ df = elections(2020; type = :assets, uf = "PE")
 
 ### Supported datasets
 
-| `type`                   | TSE repository             | Description                                  |
-|--------------------------|----------------------------|----------------------------------------------|
-| `:candidates`            | `consulta_cand`            | Registered candidates                         |
-| `:candidate_votes`       | `votacao_candidato_munzona`| Nominal votes by candidate/municipality/zone  |
-| `:party_votes`           | `votacao_partido_munzona`  | Votes by party/municipality/zone              |
-| `:vote_details`          | `detalhe_votacao_munzona`  | Vote count details by municipality/zone       |
-| `:section_votes`†        | `votacao_secao`            | Votes by electoral section                    |
-| `:section_vote_details`  | `detalhe_votacao_secao`    | Vote count details by section                 |
-| `:assets`                | `bem_candidato`            | Candidate asset declarations                  |
-| `:coalitions`            | `consulta_coligacao`       | Coalitions and party legends                  |
-| `:vacancies`             | `consulta_vagas`           | Number of seats in dispute                    |
-| `:voter_profile`         | `perfil_eleitorado`        | Electorate profile                            |
+| `type`                   | TSE repository             | Description                                  | Since |
+|--------------------------|----------------------------|----------------------------------------------|-------|
+| `:candidates`            | `consulta_cand`            | Registered candidates                         | 1998 |
+| `:candidates_complementary` | `consulta_cand_complementar` | Nationality, birthplace, re-election, spending cap… | 2014‡ |
+| `:candidate_social_media` | `rede_social_candidato`   | Candidates' social media links                | 2014‡ |
+| `:cassation_reasons`     | `motivo_cassacao`          | Reasons for revoked candidacies               | 2012 |
+| `:candidate_votes`       | `votacao_candidato_munzona`| Nominal votes by candidate/municipality/zone  | 1998 |
+| `:party_votes`           | `votacao_partido_munzona`  | Votes by party/municipality/zone              | 1998 |
+| `:vote_details`          | `detalhe_votacao_munzona`  | Vote count details by municipality/zone       | 1998 |
+| `:section_votes`†        | `votacao_secao`            | Votes by electoral section                    | 1998 |
+| `:section_vote_details`  | `detalhe_votacao_secao`    | Vote count details by section                 | 1998 |
+| `:assets`                | `bem_candidato`            | Candidate asset declarations                  | 1998 |
+| `:coalitions`            | `consulta_coligacao`       | Coalitions and party legends                  | 1998 |
+| `:vacancies`             | `consulta_vagas`           | Number of seats in dispute                    | 1998 |
+| `:voter_profile`         | `perfil_eleitorado`        | Electorate profile                            | 1998 |
+| `:voter_profile_section`† | `perfil_eleitor_secao`    | Electorate profile by electoral section       | 2008 |
 
 † Partitioned by state on the TSE CDN — the `uf` argument is mandatory.
+‡ Not published for 2016.
+
+Each dataset has a shortcut with the same name (`candidates(2022)`,
+`cassation_reasons(2022)`…). `available_datasets()` lists them all, with the
+first year of each.
+
+### Campaign finance
+
+Revenue and expenses declared by candidates and party bodies, from 2018 on (the
+files only have a standard layout since then):
+
+```julia
+rev  = campaign_finance(2022; uf = "PE")                          # candidates' revenue
+paid = campaign_finance(2022; table = :expenses_paid, uf = "PE")
+prt  = campaign_finance(2022; filer = :parties, table = :expenses_contracted, uf = "PE")
+```
+
+`table` is `:revenue`, `:revenue_original_donor`, `:expenses_contracted` or
+`:expenses_paid`; `filer` is `:candidates` or `:parties`. Pass `uf`: the national
+files are huge (the 2024 candidates ZIP alone is 1.3 GB). The four tables of a
+filer come from the same ZIP, downloaded once. They are also available through
+`elections` as `:candidate_revenue`, `:party_expenses_paid` and so on.
+
+Money columns (`vr_*`) are returned as `Float64`, whether the TSE file uses a
+decimal comma or a decimal point.
 
 ### Municipalities: TSE ↔ IBGE codes
 
@@ -173,8 +202,8 @@ BRElections_TEST_NETWORK=true julia --project -e 'using Pkg; Pkg.test()'  # incl
 
 - Covers elections from 1998 onward, in the current CDN format (files with
   headers). Very old years may have divergent schemas.
-- Campaign finance reports (`prestacao_de_contas`) use a different URL structure
-  on the TSE CDN and are on the roadmap.
+- Campaign finance covers 2018 onward. Earlier years exist on the TSE CDN, but
+  each election has its own file names, folders and columns.
 - Official variable dictionaries come with each ZIP (`leiame.pdf`) and remain
   in the cache for reference.
 

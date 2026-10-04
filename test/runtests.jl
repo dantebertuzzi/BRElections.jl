@@ -259,15 +259,14 @@ end
 
     @testset "available_datasets — estrutura" begin
         ds = available_datasets()
-        @test names(ds) == ["dataset", "tse_dir", "by_uf", "description"]
+        @test names(ds) == ["dataset", "tse_dir", "by_uf", "first_year", "description"]
         @test eltype(ds.dataset) == Symbol
         @test eltype(ds.tse_dir) == String
         @test eltype(ds.by_uf) == Bool
+        @test eltype(ds.first_year) == Int
         @test eltype(ds.description) == String
         @test :section_votes in ds.dataset
-        datasets_by_uf = Set(ds.dataset[ds.by_uf])
-        @test datasets_by_uf == Set([:section_votes])
-        @test length(datasets_by_uf) == 1
+        @test Set(ds.dataset[ds.by_uf]) == Set([:section_votes, :voter_profile_section])
     end
 
     @testset "elections — integração offline (dataset nacional)" begin
@@ -716,6 +715,78 @@ end
         @test_throws ArgumentError live_results(:governor; uf = "XX")
     end
 
+    @testset "Prestação de contas e novos datasets — URLs e anos" begin
+        @test dataset_url(:candidate_revenue, 2022) ==
+              "https://cdn.tse.jus.br/estatistica/sead/odsele/prestacao_contas/prestacao_de_contas_eleitorais_candidatos_2022.zip"
+        @test dataset_url(:party_expenses_paid, 2024) ==
+              "https://cdn.tse.jus.br/estatistica/sead/odsele/prestacao_contas/prestacao_de_contas_eleitorais_orgaos_partidarios_2024.zip"
+        # as quatro tabelas de um prestador vêm do mesmo ZIP (e do mesmo cache)
+        @test length(unique(dataset_url(t, 2022) for t in (:candidate_revenue, :candidate_revenue_original_donor,
+                                                            :candidate_expenses_contracted, :candidate_expenses_paid))) == 1
+        @test dataset_url(:candidate_social_media, 2022) ==
+              "https://cdn.tse.jus.br/estatistica/sead/odsele/consulta_cand/rede_social_candidato_2022.zip"
+        @test dataset_url(:voter_profile_section, 2022; uf = "pe") ==
+              "https://cdn.tse.jus.br/estatistica/sead/odsele/perfil_eleitor_secao/perfil_eleitor_secao_2022_PE.zip"
+        @test_throws ArgumentError dataset_url(:voter_profile_section, 2022)        # por UF
+        # antes do primeiro ano do dataset
+        @test_throws ArgumentError dataset_url(:candidate_revenue, 2016)
+        @test_throws ArgumentError dataset_url(:cassation_reasons, 2010)
+        @test dataset_url(:cassation_reasons, 2012) isa String
+
+        @test_throws ArgumentError campaign_finance(2022; table = :receitas)
+        @test_throws ArgumentError campaign_finance(2022; filer = :committees)
+        @test_throws ArgumentError campaign_finance(2016; uf = "PE")              # antes de 2018, sem rede
+    end
+
+    @testset "extract_csvs — uma tabela de um ZIP com várias (member)" begin
+        @test BRElections._matches_member("receitas_candidatos_2022_PE.csv", "receitas_candidatos")
+        @test !BRElections._matches_member("receitas_candidatos_doador_originario_2022_PE.csv", "receitas_candidatos")
+        @test BRElections._matches_member("RECEITAS_CANDIDATOS_DOADOR_ORIGINARIO_2022_PE.csv",
+                                          "receitas_candidatos_doador_originario")
+        @test BRElections._matches_member("qualquer.csv", "")
+
+        dir = mktempdir()
+        zippath = joinpath(dir, "prestacao_teste_2022.zip")
+        w = ZipFile.Writer(zippath)
+        for (table, rows) in (("receitas_candidatos", "1;100,50\n"),
+                              ("receitas_candidatos_doador_originario", "2;7,25\n"),
+                              ("despesas_pagas_candidatos", "3;9\n"))
+            for uf in ("PE", "BA", "BRASIL")
+                f = ZipFile.addfile(w, "$(table)_2022_$(uf).csv")
+                write(f, "SQ;VR_VALOR\n" * rows)
+            end
+        end
+        close(w)
+        csvs = BRElections.extract_csvs(zippath; uf = "PE", member = "receitas_candidatos")
+        @test basename.(csvs) == ["receitas_candidatos_2022_PE.csv"]
+        csvs = BRElections.extract_csvs(zippath; member = "receitas_candidatos_doador_originario")
+        @test basename.(csvs) == ["receitas_candidatos_doador_originario_2022_BRASIL.csv"]
+        df = read_tse_csv(only(csvs))
+        @test df.vr_valor == [7.25]                      # vírgula decimal convertida
+    end
+
+    @testset "Valores monetários (colunas VR_*)" begin
+        dir = mktempdir()
+        csv = joinpath(dir, "valores.csv")
+        write(csv, """
+            "SQ";"VR_VIRGULA";"VR_PONTO";"VR_INTEIRO";"VR_TEXTO";"VR_FALTANDO";"DS_VALOR"
+            "1";"1500,00";"1270629.01";"10";"abc";"#NULO#";"1,5"
+            "2";"0,5";"-1";"-1";"12,0";"2,25";"2,5"
+            """)
+        df = read_tse_csv(csv)
+        @test df.vr_virgula == [1500.0, 0.5] && eltype(df.vr_virgula) == Float64
+        @test df.vr_ponto == [1270629.01, -1.0]
+        @test df.vr_inteiro == [10, -1]                  # já numérica: intocada
+        @test df.vr_texto == ["abc", "12,0"]             # nem tudo é número: fica texto
+        @test isequal(df.vr_faltando, [missing, 2.25])
+        @test eltype(df.vr_faltando) == Union{Missing,Float64}
+        @test df.ds_valor == ["1,5", "2,5"]              # só colunas VR_* são convertidas
+        # o filtro já vê números; o resultado vazio mantém o tipo
+        @test nrow(read_tse_csv(csv; filter = row -> row.vr_virgula > 1000)) == 1
+        @test eltype(read_tse_csv(csv; filter = row -> false).vr_virgula) == Float64
+        @test BRElections._parse_money("1.234,56") === nothing   # milhar + decimal: não arrisca
+    end
+
     @testset "url_exists — erro de rede/URL retorna false" begin
         @test BRElections.url_exists("not a valid url") == false
         @test BRElections.url_status("not a valid url") == 0
@@ -799,6 +870,12 @@ end
                 @test allunique(skipmissing(mun.cd_municipio_ibge))
                 pe = municipalities(uf = "pe", verbose = false)
                 @test all(==("PE"), pe.sg_uf) && 30015 in pe.cd_municipio   # Fernando de Noronha
+
+                # Datasets novos (pequenos)
+                cass = cassation_reasons(2022; uf = "PE", verbose = false)
+                @test nrow(cass) > 0 && "ds_motivo" in names(cass)
+                redes = candidate_social_media(2022; uf = "PE", verbose = false)
+                @test nrow(redes) > 0 && "ds_url" in names(redes)
 
                 # Apuração (Divulgação de Resultados): eleição já totalizada
                 sp = live_results(:mayor; uf = "SP", municipality = "São Paulo", verbose = false)

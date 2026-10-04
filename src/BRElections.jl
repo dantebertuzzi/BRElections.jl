@@ -12,7 +12,10 @@ Ponto de entrada principal: [`elections`](@ref). Funções de conveniência:
 [`candidates`](@ref), [`candidate_votes`](@ref), [`party_votes`](@ref),
 [`vote_details`](@ref), [`section_votes`](@ref), [`section_vote_details`](@ref),
 [`assets`](@ref), [`coalitions`](@ref), [`vacancies`](@ref),
-[`voter_profile`](@ref). Para cruzar com dados do IBGE:
+[`voter_profile`](@ref), [`voter_profile_section`](@ref),
+[`candidates_complementary`](@ref), [`candidate_social_media`](@ref),
+[`cassation_reasons`](@ref). Prestação de contas: [`campaign_finance`](@ref).
+Para cruzar com dados do IBGE:
 [`municipalities`](@ref). Apuração ao vivo: [`live_results`](@ref).
 
 ```julia
@@ -46,7 +49,9 @@ using ZipFile
 export elections,
        candidates, candidate_votes, party_votes, vote_details,
        section_votes, section_vote_details,
-       assets, coalitions, vacancies, voter_profile,
+       assets, coalitions, vacancies, voter_profile, voter_profile_section,
+       candidates_complementary, candidate_social_media, cassation_reasons,
+       campaign_finance,
        municipalities, live_results,
        available_datasets, available_files, dataset_url,
        cache_dir, set_cache_dir!, clear_cache!,

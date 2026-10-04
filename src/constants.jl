@@ -5,35 +5,86 @@
 "URL base do repositório de dados abertos do TSE."
 const TSE_BASE = "https://cdn.tse.jus.br/estatistica/sead/odsele"
 
-"""
-Descrição de cada dataset suportado.
+"Primeiro ano com arquivos no formato atual do CDN."
+const FIRST_YEAR = 1998
 
-- `dir`    : subdiretório no CDN do TSE
-- `prefix` : prefixo dos arquivos (`prefix_ANO.zip` ou `prefix_ANO_UF.zip`)
-- `by_uf`  : `true` quando o próprio ZIP é particionado por UF
-- `desc`   : descrição curta (pt-BR)
 """
-const DATASETS = Dict{Symbol,NamedTuple{(:dir, :prefix, :by_uf, :desc),Tuple{String,String,Bool,String}}}(
-    :candidates => (dir = "consulta_cand", prefix = "consulta_cand", by_uf = false,
-                    desc = "Candidaturas registradas (consulta_cand)"),
-    :candidate_votes => (dir = "votacao_candidato_munzona", prefix = "votacao_candidato_munzona", by_uf = false,
-                    desc = "Votação nominal por candidato, município e zona"),
-    :party_votes => (dir = "votacao_partido_munzona", prefix = "votacao_partido_munzona", by_uf = false,
-                    desc = "Votação por partido, município e zona"),
-    :vote_details => (dir = "detalhe_votacao_munzona", prefix = "detalhe_votacao_munzona", by_uf = false,
-                    desc = "Detalhe da apuração por município e zona"),
-    :section_votes => (dir = "votacao_secao", prefix = "votacao_secao", by_uf = true,
-                    desc = "Votação por seção eleitoral (um ZIP por UF)"),
-    :section_vote_details => (dir = "detalhe_votacao_secao", prefix = "detalhe_votacao_secao", by_uf = false,
-                    desc = "Detalhe da apuração por seção eleitoral"),
-    :assets => (dir = "bem_candidato", prefix = "bem_candidato", by_uf = false,
-                    desc = "Bens declarados pelos candidatos"),
-    :coalitions => (dir = "consulta_coligacao", prefix = "consulta_coligacao", by_uf = false,
-                    desc = "Coligações e legendas"),
-    :vacancies => (dir = "consulta_vagas", prefix = "consulta_vagas", by_uf = false,
-                    desc = "Número de vagas em disputa"),
-    :voter_profile => (dir = "perfil_eleitorado", prefix = "perfil_eleitorado", by_uf = false,
-                    desc = "Perfil do eleitorado"),
+Descrição de um dataset suportado.
+
+- `dir`        : subdiretório no CDN do TSE
+- `prefix`     : prefixo do ZIP (`prefix_ANO.zip` ou `prefix_ANO_UF.zip`)
+- `by_uf`      : `true` quando o próprio ZIP é particionado por UF
+- `member`     : prefixo da tabela dentro do ZIP (`member_ANO_UF.csv`), para
+                 ZIPs com mais de uma tabela; `""` usa todos os arquivos
+- `first_year` : primeiro ano em que o dataset existe nesse formato
+- `desc`       : descrição curta (pt-BR)
+"""
+const DatasetSpec = NamedTuple{(:dir, :prefix, :by_uf, :member, :first_year, :desc),
+                               Tuple{String,String,Bool,String,Int,String}}
+
+_ds(dir, prefix, desc; by_uf = false, member = "", first_year = FIRST_YEAR) =
+    DatasetSpec((dir, prefix, by_uf, member, first_year, desc))
+
+# A prestação de contas só tem formato padronizado a partir de 2018: antes,
+# cada eleição tem nomes de arquivo, diretórios e colunas próprios.
+const FINANCE_FIRST_YEAR = 2018
+const _CAND_FINANCE = "prestacao_de_contas_eleitorais_candidatos"
+const _PARTY_FINANCE = "prestacao_de_contas_eleitorais_orgaos_partidarios"
+
+"Datasets suportados, indexados pelo identificador usado em `elections(; type)`."
+const DATASETS = Dict{Symbol,DatasetSpec}(
+    :candidates => _ds("consulta_cand", "consulta_cand",
+                       "Candidaturas registradas (consulta_cand)"),
+    :candidates_complementary => _ds("consulta_cand_complementar", "consulta_cand_complementar",
+                       "Dados complementares das candidaturas (nacionalidade, naturalidade, reeleição, teto de gastos...)";
+                       first_year = 2014),
+    :candidate_social_media => _ds("consulta_cand", "rede_social_candidato",
+                       "Redes sociais declaradas pelos candidatos"; first_year = 2014),
+    :cassation_reasons => _ds("motivo_cassacao", "motivo_cassacao",
+                       "Motivos de cassação de candidaturas"; first_year = 2012),
+    :candidate_votes => _ds("votacao_candidato_munzona", "votacao_candidato_munzona",
+                       "Votação nominal por candidato, município e zona"),
+    :party_votes => _ds("votacao_partido_munzona", "votacao_partido_munzona",
+                       "Votação por partido, município e zona"),
+    :vote_details => _ds("detalhe_votacao_munzona", "detalhe_votacao_munzona",
+                       "Detalhe da apuração por município e zona"),
+    :section_votes => _ds("votacao_secao", "votacao_secao",
+                       "Votação por seção eleitoral (um ZIP por UF)"; by_uf = true),
+    :section_vote_details => _ds("detalhe_votacao_secao", "detalhe_votacao_secao",
+                       "Detalhe da apuração por seção eleitoral"),
+    :assets => _ds("bem_candidato", "bem_candidato", "Bens declarados pelos candidatos"),
+    :coalitions => _ds("consulta_coligacao", "consulta_coligacao", "Coligações e legendas"),
+    :vacancies => _ds("consulta_vagas", "consulta_vagas", "Número de vagas em disputa"),
+    :voter_profile => _ds("perfil_eleitorado", "perfil_eleitorado", "Perfil do eleitorado"),
+    :voter_profile_section => _ds("perfil_eleitor_secao", "perfil_eleitor_secao",
+                       "Perfil do eleitorado por seção eleitoral (um ZIP por UF)";
+                       by_uf = true, first_year = 2008),
+
+    # Prestação de contas: cada ZIP traz quatro tabelas.
+    :candidate_revenue => _ds("prestacao_contas", _CAND_FINANCE,
+                       "Receitas de campanha dos candidatos";
+                       member = "receitas_candidatos", first_year = FINANCE_FIRST_YEAR),
+    :candidate_revenue_original_donor => _ds("prestacao_contas", _CAND_FINANCE,
+                       "Receitas dos candidatos pelo doador originário";
+                       member = "receitas_candidatos_doador_originario", first_year = FINANCE_FIRST_YEAR),
+    :candidate_expenses_contracted => _ds("prestacao_contas", _CAND_FINANCE,
+                       "Despesas contratadas pelos candidatos";
+                       member = "despesas_contratadas_candidatos", first_year = FINANCE_FIRST_YEAR),
+    :candidate_expenses_paid => _ds("prestacao_contas", _CAND_FINANCE,
+                       "Despesas pagas pelos candidatos";
+                       member = "despesas_pagas_candidatos", first_year = FINANCE_FIRST_YEAR),
+    :party_revenue => _ds("prestacao_contas", _PARTY_FINANCE,
+                       "Receitas de campanha dos órgãos partidários";
+                       member = "receitas_orgaos_partidarios", first_year = FINANCE_FIRST_YEAR),
+    :party_revenue_original_donor => _ds("prestacao_contas", _PARTY_FINANCE,
+                       "Receitas dos órgãos partidários pelo doador originário";
+                       member = "receitas_orgaos_partidarios_doador_originario", first_year = FINANCE_FIRST_YEAR),
+    :party_expenses_contracted => _ds("prestacao_contas", _PARTY_FINANCE,
+                       "Despesas contratadas pelos órgãos partidários";
+                       member = "despesas_contratadas_orgaos_partidarios", first_year = FINANCE_FIRST_YEAR),
+    :party_expenses_paid => _ds("prestacao_contas", _PARTY_FINANCE,
+                       "Despesas pagas pelos órgãos partidários";
+                       member = "despesas_pagas_orgaos_partidarios", first_year = FINANCE_FIRST_YEAR),
 )
 
 "Unidades federativas aceitas (`BR` = arquivo nacional, `ZZ` = exterior)."
@@ -44,8 +95,6 @@ const UFS = ["AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO", "MA",
 "Último ano eleitoral com arquivos consolidados conhecidos pelo pacote."
 const LAST_KNOWN_YEAR = 2024
 
-"Primeiro ano com arquivos no formato atual do CDN."
-const FIRST_YEAR = 1998
 
 """
     validate_year(year) -> Int
@@ -91,8 +140,10 @@ end
     dataset_url(type, year; uf = nothing) -> String
 
 Constrói a URL pública do ZIP no CDN do TSE para o dataset `type` e o ano
-`year`. Para datasets particionados por UF no CDN (`:section_votes`) o
-argumento `uf` é obrigatório.
+`year`. Para datasets particionados por UF no CDN (`:section_votes`,
+`:voter_profile_section`) o argumento `uf` é obrigatório. Anos anteriores ao
+primeiro do dataset (coluna `first_year` de [`available_datasets`](@ref))
+são recusados.
 
 ```julia
 julia> dataset_url(:candidates, 2022)
@@ -106,6 +157,9 @@ function dataset_url(type::Symbol, year::Integer; uf::Union{Nothing,AbstractStri
     validate_type(type)
     y = validate_year(year)
     ds = DATASETS[type]
+    y >= ds.first_year || throw(ArgumentError(
+        "O dataset :$type só está disponível neste formato a partir de $(ds.first_year). " *
+        "Os arquivos brutos de anos anteriores, quando existem, estão em $(TSE_BASE)/$(ds.dir)/."))
     if ds.by_uf
         uf === nothing && throw(ArgumentError(
             "O dataset :$type é particionado por UF; informe `uf`, por exemplo uf = \"PE\"."))
@@ -121,7 +175,7 @@ end
     available_datasets() -> DataFrame
 
 Tabela com os datasets suportados, o subdiretório no CDN do TSE, se são
-particionados por UF e uma descrição curta.
+particionados por UF, o primeiro ano disponível e uma descrição curta.
 """
 function available_datasets()
     ks = sort!(collect(keys(DATASETS)))
@@ -129,6 +183,7 @@ function available_datasets()
         dataset = ks,
         tse_dir = [DATASETS[k].dir for k in ks],
         by_uf = [DATASETS[k].by_uf for k in ks],
+        first_year = [DATASETS[k].first_year for k in ks],
         description = [DATASETS[k].desc for k in ks],
     )
 end

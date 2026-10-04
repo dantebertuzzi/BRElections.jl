@@ -20,6 +20,38 @@ _force_string(name::AbstractString) = any(p -> startswith(uppercase(name), p), S
 # Função `types` passada ao CSV.jl: força String nas colunas de identificadores.
 _tse_types(i, name) = _force_string(String(name)) ? String : nothing
 
+# Valores monetários (colunas `VR_*`): o TSE usa vírgula decimal em alguns
+# arquivos ("1500,00", prestação de contas e bens) e ponto em outros
+# ("1270629.01", dados complementares), então não dá para fixar `decimal` na
+# leitura. Colunas `VR_*` que o CSV.jl deixou como texto são convertidas para
+# Float64 se todos os valores forem numéricos com um dos dois separadores;
+# senão, ficam como estão.
+_is_money_column(name) = startswith(lowercase(String(name)), "vr_")
+
+function _parse_money(s::AbstractString)
+    t = strip(s)
+    tryparse(Float64, count(==(','), t) == 1 && !occursin('.', t) ? replace(t, ',' => '.') : t)
+end
+
+function _convert_money_columns!(df::DataFrame)
+    for name in names(df)
+        _is_money_column(name) || continue
+        col = df[!, name]
+        nonmissingtype(eltype(col)) <: AbstractString || continue
+        parsed = Vector{Union{Missing,Float64}}(undef, length(col))
+        ok = true
+        for (i, x) in enumerate(col)
+            ismissing(x) && (parsed[i] = missing; continue)
+            v = _parse_money(x)
+            v === nothing && (ok = false; break)
+            parsed[i] = v
+        end
+        ok || continue
+        df[!, name] = any(ismissing, parsed) ? parsed : Vector{Float64}(parsed)
+    end
+    df
+end
+
 # Constrói o `select` do CSV.jl a partir de uma lista de colunas,
 # com correspondência insensível a maiúsculas/minúsculas.
 function _column_selector(columns)
@@ -76,7 +108,8 @@ function read_tse_csv(path::AbstractString;
 
     df = if filter === nothing
         # Em arquivos pequenos, paralelizar não ajuda e o CSV.jl emite aviso.
-        CSV.read(path, DataFrame; ntasks = filesize(path) < PARALLEL_MIN_BYTES ? 1 : ntasks, kw...)
+        _convert_money_columns!(
+            CSV.read(path, DataFrame; ntasks = filesize(path) < PARALLEL_MIN_BYTES ? 1 : ntasks, kw...))
     else
         _read_tse_csv_with_filter(path, filter, ntasks, kw)
     end
@@ -107,7 +140,9 @@ Base.getindex(r::_AnyCaseRow, name::Union{Symbol,AbstractString}) = getfield(r, 
 Base.hasproperty(r::_AnyCaseRow, name::Symbol) = hasproperty(getfield(r, :row), _column_name(r, name))
 Base.propertynames(r::_AnyCaseRow) = propertynames(getfield(r, :row))
 
-_apply_filter(filter, df::DataFrame) = Base.filter(row -> filter(_AnyCaseRow(row)), df)
+# Converte os valores monetários antes, para o predicado já ver números.
+_apply_filter(filter, df::DataFrame) =
+    Base.filter(row -> filter(_AnyCaseRow(row)), _convert_money_columns!(df))
 
 # Abaixo deste tamanho o arquivo é lido de uma vez e filtrado em memória:
 # dividi-lo em chunks não economiza nada, e o CSV.jl não consegue particionar
@@ -140,7 +175,7 @@ end
 function _empty_like(path, kw)
     df = CSV.read(path, DataFrame; limit = 0, kw...)
     empty!(df)
-    df
+    _convert_money_columns!(df)
 end
 
 """

@@ -11,12 +11,15 @@ Baixa (com cache), descompacta e importa um dataset eleitoral público do TSE.
 
 - `year`: ano eleitoral (par, ≥ $(FIRST_YEAR)).
 - `type`: dataset — uma das chaves de `available_datasets()`:
-  `:candidates`, `:candidate_votes`, `:party_votes`, `:vote_details`,
+  `:candidates`, `:candidates_complementary`, `:candidate_social_media`,
+  `:cassation_reasons`, `:candidate_votes`, `:party_votes`, `:vote_details`,
   `:section_votes`, `:section_vote_details`, `:assets`, `:coalitions`,
-  `:vacancies`, `:voter_profile`.
+  `:vacancies`, `:voter_profile`, `:voter_profile_section` e as tabelas de
+  prestação de contas (veja [`campaign_finance`](@ref)).
 - `uf`: sigla da UF (`"PE"`, `"SP"`, ...). Opcional para datasets nacionais
   (nesse caso importa o Brasil inteiro); **obrigatória** para
-  `:section_votes`, que o TSE publica em um ZIP por UF.
+  `:section_votes` e `:voter_profile_section`, que o TSE publica em um ZIP
+  por UF.
 
 # Importação (repassados a [`read_tse_csv`](@ref))
 
@@ -71,7 +74,7 @@ function elections(year::Integer;
     # Em ZIPs nacionais, já restringe a extração aos arquivos da UF pedida
     # (ou ao _BRASIL): evita descompactar/transcodificar dados que não serão
     # usados, o que para alguns datasets chega a vários GB desnecessários.
-    csvs = extract_csvs(zippath; uf = ds.by_uf ? nothing : uf, force)
+    csvs = extract_csvs(zippath; uf = ds.by_uf ? nothing : uf, member = ds.member, force)
     files = ds.by_uf ? csvs : select_csvs(csvs; uf)
     verbose && @info "Importando $(length(files)) arquivo(s)" basename.(files)
 
@@ -91,6 +94,10 @@ for (fname, dtype) in (
         (:coalitions, :coalitions),
         (:vacancies, :vacancies),
         (:voter_profile, :voter_profile),
+        (:voter_profile_section, :voter_profile_section),
+        (:candidates_complementary, :candidates_complementary),
+        (:candidate_social_media, :candidate_social_media),
+        (:cassation_reasons, :cassation_reasons),
     )
     desc = DATASETS[dtype].desc
     @eval begin
@@ -101,4 +108,60 @@ for (fname, dtype) in (
         """
         $fname(year::Integer; kwargs...) = elections(year; type = $(QuoteNode(dtype)), kwargs...)
     end
+end
+
+# --- Prestação de contas ------------------------------------------------
+
+const _FINANCE_TYPES = Dict(
+    (:candidates, :revenue)                 => :candidate_revenue,
+    (:candidates, :revenue_original_donor)  => :candidate_revenue_original_donor,
+    (:candidates, :expenses_contracted)     => :candidate_expenses_contracted,
+    (:candidates, :expenses_paid)           => :candidate_expenses_paid,
+    (:parties, :revenue)                    => :party_revenue,
+    (:parties, :revenue_original_donor)     => :party_revenue_original_donor,
+    (:parties, :expenses_contracted)        => :party_expenses_contracted,
+    (:parties, :expenses_paid)              => :party_expenses_paid,
+)
+
+"""
+    campaign_finance(year; table = :revenue, filer = :candidates, uf = nothing, kwargs...) -> DataFrame
+
+Prestação de contas eleitorais: receitas e despesas de campanha declaradas ao
+TSE. Disponível a partir de $(FINANCE_FIRST_YEAR), quando os arquivos passaram a
+ter formato padronizado.
+
+# Argumentos
+
+- `table`: `:revenue` (receitas), `:revenue_original_donor` (receitas pelo
+  doador originário — quem doou ao partido que repassou ao candidato, por
+  exemplo), `:expenses_contracted` (despesas contratadas) ou
+  `:expenses_paid` (despesas pagas).
+- `filer`: quem prestou contas — `:candidates` ou `:parties` (órgãos
+  partidários).
+- `uf`: restringe a uma UF. **Recomendado**: os arquivos nacionais têm de
+  centenas de MB a alguns GB (o ZIP de candidatos de 2024 tem 1,3 GB). Em
+  eleições gerais, `uf = "BR"` traz as contas de quem disputou cargo nacional
+  (Presidente).
+
+Os demais argumentos são os de [`elections`](@ref) (`columns`, `filter`,
+`check_updates`...). As quatro tabelas de cada prestador vêm do mesmo ZIP,
+baixado uma vez só.
+
+Equivale a `elections(year; type = ...)` com `:candidate_revenue`,
+`:candidate_expenses_paid`, `:party_revenue` etc.
+
+# Exemplo
+
+```julia
+rec = campaign_finance(2022; uf = "PE")
+desp = campaign_finance(2022; table = :expenses_paid, uf = "PE",
+                        columns = [:sq_candidato, :nm_candidato, :ds_origem_despesa, :vr_pagto_despesa])
+```
+"""
+function campaign_finance(year::Integer; table::Symbol = :revenue, filer::Symbol = :candidates, kwargs...)
+    key = (filer, table)
+    haskey(_FINANCE_TYPES, key) || throw(ArgumentError(
+        "Combinação inválida: filer = :$filer, table = :$table. `filer`: :candidates ou :parties; " *
+        "`table`: :revenue, :revenue_original_donor, :expenses_contracted ou :expenses_paid."))
+    elections(year; type = _FINANCE_TYPES[key], kwargs...)
 end

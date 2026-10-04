@@ -18,6 +18,11 @@ assets
 coalitions
 vacancies
 voter_profile
+voter_profile_section
+candidates_complementary
+candidate_social_media
+cassation_reasons
+campaign_finance
 read_tse_csv
 ```
 

@@ -227,7 +227,8 @@ em `ufs` (por padrão apenas uma, para limitar o número de requisições).
 
 Retorna um `DataFrame` com colunas `dataset`, `uf` (`missing` para arquivos
 nacionais), `url`, `status` (código HTTP; `0` se não houve resposta) e
-`exists`.
+`exists`. Datasets que ainda não existiam em `year` (antes do seu
+`first_year`) ficam de fora.
 
 A coluna `status` distingue "o arquivo não está publicado" (`404`) de "o CDN
 recusou/não respondeu" (`403`, `5xx`, `0`) — nesse segundo caso `exists` é
@@ -242,6 +243,7 @@ function available_files(year::Integer; ufs::AbstractVector{<:AbstractString} = 
     end
     for k in sort!(collect(keys(DATASETS)))
         ds = DATASETS[k]
+        y < ds.first_year && continue
         if ds.by_uf
             for uf in ufs
                 push!(rows, _row(k, validate_uf(uf), dataset_url(k, y; uf = uf)))
