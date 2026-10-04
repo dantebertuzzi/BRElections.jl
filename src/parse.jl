@@ -85,8 +85,9 @@ sentinelas `#NULO#`/`#NE#` convertidas em `missing` e identificadores
 - `filter = nothing`: predicado `row -> Bool` aplicado durante a importação.
   As colunas podem ser acessadas tanto pelo nome normalizado (`row.nr_turno`,
   o mesmo do `DataFrame` devolvido) quanto pelo original do TSE
-  (`row.NR_TURNO`). Em arquivos grandes, a leitura é feita em *chunks*
-  (`CSV.Chunks`), de modo que apenas as linhas aprovadas ocupam memória.
+  (`row.NR_TURNO`). Se o arquivo couber com folga na memória livre, é lido
+  inteiro e filtrado (mais rápido); senão, é lido em *chunks* (`CSV.Chunks`),
+  de modo que apenas as linhas aprovadas ocupam memória.
 - `normalize_names = true`: converte os nomes das colunas para minúsculas.
 - `ntasks = Threads.nthreads()`: paralelismo de leitura/chunks.
 
@@ -144,16 +145,28 @@ Base.propertynames(r::_AnyCaseRow) = propertynames(getfield(r, :row))
 _apply_filter(filter, df::DataFrame) =
     Base.filter(row -> filter(_AnyCaseRow(row)), _convert_money_columns!(df))
 
-# Abaixo deste tamanho o arquivo é lido de uma vez e filtrado em memória:
-# dividi-lo em chunks não economiza nada, e o CSV.jl não consegue particionar
-# arquivos com poucas linhas. (`Ref` para os testes exercitarem os dois caminhos.)
+# Com `filter`, ler o arquivo inteiro e filtrar depois é bem mais rápido que
+# CSV.Chunks (medido: 0,8 s contra 2,5 s num CSV de 93 MB); os chunks só valem
+# para não estourar a memória. Então o arquivo é lido de uma vez se for pequeno
+# (o CSV.jl nem consegue particionar arquivos com poucas linhas) ou se couber
+# com folga na memória livre: a leitura aloca algumas vezes o tamanho do CSV,
+# e o resultado filtrado é mais uma cópia. (`Ref`s para os testes exercitarem
+# os dois caminhos.)
 const CHUNK_MIN_BYTES = Ref(64 * 2^20)
+const FILTER_MEMORY_FACTOR = Ref(6.0)
 
-# Leitura com filtro: em arquivos grandes, usa CSV.Chunks para evitar carregar
-# tudo em memória; nos pequenos, lê inteiro e filtra.
+function _filter_in_memory(path)
+    sz = filesize(path)
+    sz < CHUNK_MIN_BYTES[] || sz * FILTER_MEMORY_FACTOR[] < Sys.free_memory()
+end
+
+# Leitura com filtro: lê inteiro e filtra quando cabe na memória; senão usa
+# CSV.Chunks, de modo que só as linhas aprovadas ficam em memória.
 function _read_tse_csv_with_filter(path, filter, ntasks, kw)
-    filesize(path) < CHUNK_MIN_BYTES[] &&
-        return _apply_filter(filter, CSV.read(path, DataFrame; ntasks = 1, kw...))
+    if _filter_in_memory(path)
+        nt = filesize(path) < PARALLEL_MIN_BYTES ? 1 : ntasks
+        return _apply_filter(filter, CSV.read(path, DataFrame; ntasks = nt, kw...))
+    end
 
     parts = DataFrame[]
     try

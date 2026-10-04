@@ -550,7 +550,9 @@ end
             end
         end
         old = BRElections.CHUNK_MIN_BYTES[]
+        old_factor = BRElections.FILTER_MEMORY_FACTOR[]
         BRElections.CHUNK_MIN_BYTES[] = 0
+        BRElections.FILTER_MEMORY_FACTOR[] = Inf      # "não cabe na memória"
         try
             df = read_tse_csv(csv; filter = row -> row.nr_turno == 1 && row.SG_UF == "PE", ntasks = 4)
             @test nrow(df) == count(i -> isodd(i) && i % 3 == 0, 1:20_000)
@@ -558,6 +560,16 @@ end
             # ArgumentError do usuário não é confundido com falha de particionamento
             @test_throws ArgumentError read_tse_csv(csv; ntasks = 4,
                 filter = row -> throw(ArgumentError("do usuário")))
+        finally
+            BRElections.CHUNK_MIN_BYTES[] = old
+            BRElections.FILTER_MEMORY_FACTOR[] = old_factor
+        end
+        # cabe na memória: lê inteiro (mesmo resultado)
+        BRElections.CHUNK_MIN_BYTES[] = 0
+        try
+            df = read_tse_csv(csv; filter = row -> row.nr_turno == 1 && row.SG_UF == "PE", ntasks = 4)
+            @test nrow(df) == count(i -> isodd(i) && i % 3 == 0, 1:20_000)
+            @test BRElections._filter_in_memory(csv)
         finally
             BRElections.CHUNK_MIN_BYTES[] = old
         end
@@ -785,6 +797,59 @@ end
         @test nrow(read_tse_csv(csv; filter = row -> row.vr_virgula > 1000)) == 1
         @test eltype(read_tse_csv(csv; filter = row -> false).vr_virgula) == Float64
         @test BRElections._parse_money("1.234,56") === nothing   # milhar + decimal: não arrisca
+    end
+
+    @testset "Extração em blocos — Latin-1/UTF-8 nas fronteiras" begin
+        # Conversor próprio contra o iconv (StringEncodings), em todos os bytes.
+        all_bytes = collect(0x00:0xff)
+        @test BRElections.ensure_utf8(all_bytes) ==
+              Vector{UInt8}(codeunits(decode(all_bytes, enc"ISO-8859-1")))
+
+        @test BRElections._utf8_incomplete_tail(UInt8[0x41, 0xc3]) == 1            # 'Ã' cortado
+        @test BRElections._utf8_incomplete_tail(UInt8[0x41, 0xc3, 0x83]) == 0
+        @test BRElections._utf8_incomplete_tail(UInt8[0xe2, 0x82]) == 2            # '€' cortado
+        @test BRElections._utf8_incomplete_tail(UInt8[0xf0, 0x9f, 0x98]) == 3      # emoji cortado
+        @test BRElections._utf8_incomplete_tail(UInt8[0xf0, 0x9f, 0x98, 0x80]) == 0
+        @test BRElections._utf8_incomplete_tail(UInt8[]) == 0
+
+        texto = "DT;NOME\n" * join(("$(i);JOÃO DA CONCEIÇÃO € São Tomé 😀" for i in 1:50), "\n") * "\n"
+        ascii = "DT;NOME\n" * join(("$(i);JOAO" for i in 1:50), "\n") * "\n"
+        latin1 = encode(replace(texto, "€" => "E", "😀" => ":)"), enc"ISO-8859-1")
+        # UTF-8 válido no começo e um byte Latin-1 (0xC7 = 'Ç') depois de vários
+        # blocos: tem de refazer tudo como Latin-1, como o ensure_utf8 faria.
+        misto = vcat(Vector{UInt8}(codeunits("A;" * "ã"^40 * "\n")), UInt8[0x42, 0xc7, 0x0a])
+
+        dir = mktempdir()
+        zippath = joinpath(dir, "enc_2022.zip")
+        w = ZipFile.Writer(zippath)
+        for (name, data) in (("utf8_2022_PE.csv", codeunits(texto)), ("ascii_2022_PE.csv", codeunits(ascii)),
+                             ("latin1_2022_PE.csv", latin1), ("misto_2022_PE.csv", misto))
+            f = ZipFile.addfile(w, name; method = ZipFile.Deflate)
+            write(f, data)
+        end
+        close(w)
+
+        old = BRElections.EXTRACT_CHUNK_BYTES[]
+        try
+            for chunk in (1, 2, 3, 5, 7, 64, 2^20)
+                BRElections.EXTRACT_CHUNK_BYTES[] = chunk
+                d = mktempdir()
+                for (name, expected) in (("utf8", Vector{UInt8}(codeunits(texto))),
+                                         ("ascii", Vector{UInt8}(codeunits(ascii))),
+                                         ("latin1", BRElections.ensure_utf8(Vector{UInt8}(latin1))),
+                                         ("misto", BRElections.ensure_utf8(misto)))
+                    out = only(BRElections.extract_csvs(zippath; dest = d, member = name))
+                    @test read(out) == expected
+                    @test isvalid(String, read(out))
+                end
+            end
+        finally
+            BRElections.EXTRACT_CHUNK_BYTES[] = old
+        end
+        # Como no ensure_utf8: um byte inválido em UTF-8 faz o arquivo inteiro ser
+        # lido como Latin-1, inclusive o trecho do começo que parecia UTF-8.
+        @test read(only(BRElections.extract_csvs(zippath; dest = mktempdir(), member = "misto")), String) ==
+              "A;" * "Ã£"^40 * "\nBÇ\n"
     end
 
     @testset "url_exists — erro de rede/URL retorna false" begin

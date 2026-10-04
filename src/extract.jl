@@ -2,6 +2,28 @@
 # Extração de ZIPs e normalização de codificação
 # ---------------------------------------------------------------------------
 
+# Latin-1 → UTF-8 é trivial: bytes < 0x80 são iguais, e cada byte ≥ 0x80 vira
+# dois. Feito à mão, é ~10× mais rápido que passar pelo iconv e não aloca.
+
+"""
+    _latin1_to_utf8!(dst, src) -> Int
+
+Escreve em `dst` (com ao menos `2 * length(src)` bytes) a conversão de `src`
+de Latin-1 para UTF-8 e devolve o número de bytes escritos.
+"""
+function _latin1_to_utf8!(dst::Vector{UInt8}, src::AbstractVector{UInt8})
+    j = 0
+    @inbounds for b in src
+        if b < 0x80
+            dst[j += 1] = b
+        else
+            dst[j += 1] = 0xc0 | (b >> 6)
+            dst[j += 1] = 0x80 | (b & 0x3f)
+        end
+    end
+    j
+end
+
 """
     ensure_utf8(bytes) -> Vector{UInt8}
 
@@ -11,7 +33,87 @@ transcodificados. Bytes já válidos em UTF-8 são devolvidos sem alteração.
 """
 function ensure_utf8(bytes::Vector{UInt8})
     isvalid(String, bytes) && return bytes
-    Vector{UInt8}(codeunits(decode(bytes, enc"ISO-8859-1")))
+    dst = Vector{UInt8}(undef, length(bytes) + count(>=(0x80), bytes))
+    _latin1_to_utf8!(dst, bytes)
+    dst
+end
+
+"Tamanho dos blocos lidos de cada entrada do ZIP na extração."
+const EXTRACT_CHUNK_BYTES = Ref(8 * 2^20)
+
+# Quantos bytes no fim de `v` formam uma sequência UTF-8 ainda incompleta
+# (0 a 3) — o resto dela está no próximo bloco.
+function _utf8_incomplete_tail(v::AbstractVector{UInt8})
+    n = length(v)
+    for k in 1:min(3, n)
+        b = v[n - k + 1]
+        b & 0xc0 == 0x80 && continue          # byte de continuação: olha mais atrás
+        need = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : b >= 0xc0 ? 2 : 1
+        return need > k ? k : 0
+    end
+    0
+end
+
+"""
+    _write_utf8(entry, target; latin1 = false) -> Bool
+
+Copia a entrada `entry` do ZIP para `target` em UTF-8, em blocos de
+`EXTRACT_CHUNK_BYTES[]`, com memória constante. Equivale a
+`write(target, ensure_utf8(read(entry)))` sem carregar o arquivo inteiro:
+
+- enquanto só há ASCII, os bytes passam direto (servem às duas codificações);
+- no primeiro bloco com bytes ≥ 0x80, decide: UTF-8 válido → copia e segue
+  validando; senão → Latin-1, convertido daí em diante.
+
+Devolve `false` se o arquivo parecia UTF-8 mas tem um trecho inválido mais
+adiante; nesse caso a extração deve ser refeita com `latin1 = true`, como
+faria `ensure_utf8` olhando o arquivo inteiro.
+"""
+function _write_utf8(entry, target::AbstractString; latin1::Bool = false)
+    chunk = EXTRACT_CHUNK_BYTES[]
+    buf = Vector{UInt8}(undef, chunk + 3)     # + sobra de sequência UTF-8 incompleta
+    out = Vector{UInt8}(undef, 2 * chunk)
+    mode = latin1 ? :latin1 : :undecided
+    carry = 0
+    open(target, "w") do io
+        while !eof(entry)
+            n = Int(min(chunk, entry.uncompressedsize - position(entry)))
+            GC.@preserve buf unsafe_read(entry, pointer(buf, carry + 1), UInt(n))
+            data = view(buf, 1:carry + n)
+            carry = 0
+            if mode === :latin1
+                write(io, view(out, 1:_latin1_to_utf8!(out, data)))
+            elseif mode === :undecided && all(<(0x80), data)
+                write(io, data)
+            else
+                k = _utf8_incomplete_tail(data)
+                body = view(data, 1:length(data) - k)
+                if isvalid(String, body)
+                    mode = :utf8
+                    write(io, body)
+                    copyto!(buf, 1, buf, length(body) + 1, k)
+                    carry = k
+                elseif mode === :utf8
+                    return false
+                else
+                    mode = :latin1
+                    write(io, view(out, 1:_latin1_to_utf8!(out, data)))
+                end
+            end
+        end
+        carry == 0          # sobrou sequência incompleta no fim: não era UTF-8
+    end
+end
+
+# Reabre o ZIP e chama `f` com a entrada `name` (o ZipFile não volta ao início
+# de uma entrada já lida).
+function _with_entry(f, zippath::AbstractString, name::AbstractString)
+    reader = ZipFile.Reader(zippath)
+    try
+        f(only(e for e in reader.files if e.name == name))
+    finally
+        close(reader)
+    end
 end
 
 _is_tabular(name::AbstractString) =
@@ -53,7 +155,8 @@ end
 
 Extrai os arquivos tabulares (`.csv`/`.txt`, ignorando `leiame`) de um ZIP
 do TSE para `dest`, transcodificando o conteúdo de ISO-8859-1 para UTF-8 na
-extração. Arquivos já extraídos são reaproveitados (cache), salvo
+extração. A cópia é feita em blocos, com memória constante mesmo para
+arquivos de vários GB. Arquivos já extraídos são reaproveitados (cache), salvo
 `force = true` ou quando o ZIP é mais novo que eles (o TSE publicou outra
 versão e [`download_file`](@ref) a baixou).
 
@@ -85,9 +188,10 @@ function extract_csvs(zippath::AbstractString;
             entry.name in wanted || continue
             target = joinpath(dest, basename(entry.name))
             if force || !isfile(target) || mtime(target) < mtime(zippath)
-                data = ensure_utf8(read(entry))
                 tmp = target * ".part"
-                write(tmp, data)
+                if !_write_utf8(entry, tmp)
+                    _with_entry(e -> _write_utf8(e, tmp; latin1 = true), zippath, entry.name)
+                end
                 mv(tmp, target; force = true)
             end
             push!(out, target)

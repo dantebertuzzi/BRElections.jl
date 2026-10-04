@@ -55,6 +55,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- ZIP extraction is ~5× faster and runs in constant memory. Entries are copied
+  in 8 MB blocks instead of being read whole, and Latin-1 → UTF-8 conversion is
+  done in plain Julia instead of iconv (10× faster, identical output). For the
+  1.2 GB `votacao_candidato_munzona_2022_SP.csv`: 11.8 s and 12.9 GB allocated
+  before, 2.3 s and 142 MB now. Large files (campaign finance tables reach
+  2.5 GB) no longer risk running out of memory. StringEncodings is no longer a
+  dependency (it stays as a test-only reference for the converter).
+- With `filter`, files that fit comfortably in free memory are read whole and
+  then filtered, which is faster than `CSV.Chunks` (0.9 s vs 2.5 s on a 93 MB
+  file); chunked reading is kept for files that don't fit.
 - DataFrames compat raised to 1.4, the first version with metadata, used by
   `live_results`. Adds the `Unicode` stdlib as a dependency.
 - The `filter` predicate accepts column names in either case: `row.nr_turno`,

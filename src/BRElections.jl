@@ -42,7 +42,6 @@ using Downloads
 using JSON
 using Logging
 using Scratch
-using StringEncodings
 using Unicode
 using ZipFile
 
