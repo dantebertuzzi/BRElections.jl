@@ -64,6 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Cache revalidation runs at most once an hour per file instead of on every
+  call: the `HEAD` request cost ~0.3 s against ~0.001 s for a cached read. The
+  `.meta` file's mtime marks the last successful check (a failed one doesn't
+  count). Configurable with `BRElections_REVALIDATE_HOURS` or
+  `BRElections.REVALIDATE_INTERVAL[]`.
 - ZIP extraction is ~5× faster and runs in constant memory. Entries are copied
   in 8 MB blocks instead of being read whole, and Latin-1 → UTF-8 conversion is
   done in plain Julia instead of iconv (10× faster, identical output). For the

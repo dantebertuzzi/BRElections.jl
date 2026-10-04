@@ -852,6 +852,31 @@ end
               "A;" * "Ã£"^40 * "\nBÇ\n"
     end
 
+    @testset "Revalidação do cache — intervalo mínimo" begin
+        dest = joinpath(mktempdir(), "test.zip")
+        write(dest, "cache")
+        BRElections._write_meta(dest, Dict("etag" => "\"x\""))
+        old = BRElections.REVALIDATE_INTERVAL[]
+        try
+            BRElections.REVALIDATE_INTERVAL[] = 3600
+            # recém-verificado: usa o cache sem tocar na rede (a URL nem existe)
+            @test_logs (:info, r"verificado no TSE há menos de 1.0 h") BRElections.download_file(
+                "http://url-falsa.tse/test.zip", dest)
+            BRElections.REVALIDATE_INTERVAL[] = 0
+            before = mtime(BRElections._meta_path(dest))
+            sleep(1.1)
+            # intervalo vencido: consulta; falha de rede não marca a verificação
+            @test_logs (:warn, r"Não foi possível verificar") BRElections.download_file(
+                "http://url-falsa.tse/test.zip", dest; retries = 1)
+            @test mtime(BRElections._meta_path(dest)) == before
+            @test read(dest, String) == "cache"
+        finally
+            BRElections.REVALIDATE_INTERVAL[] = old
+        end
+        @test BRElections._fmt_interval(3600.0) == "1.0 h"
+        @test BRElections._fmt_interval(600.0) == "10 min"
+    end
+
     @testset "elections — vários anos (offline)" begin
         old_cache = cache_dir()
         set_cache_dir!(mktempdir())
@@ -970,12 +995,20 @@ end
                 zippath = BRElections._zip_path(:vacancies, probe_url)
                 @test haskey(BRElections._read_meta(zippath), "etag")
                 before = mtime(zippath)
-                @test_logs (:info, r"em dia") match_mode = :any vacancies(2022)
-                @test mtime(zippath) == before
-                # ETag local diferente do publicado: baixa a versão nova
-                BRElections._write_meta(zippath, Dict("etag" => "\"versao-antiga\""))
-                @test_logs (:info, r"nova versão") match_mode = :any vacancies(2022)
-                @test BRElections._read_meta(zippath)["etag"] != "\"versao-antiga\""
+                # recém-baixado: dentro do intervalo, nem consulta o TSE
+                @test_logs (:info, r"verificado no TSE há menos") match_mode = :any vacancies(2022)
+                old_interval = BRElections.REVALIDATE_INTERVAL[]
+                BRElections.REVALIDATE_INTERVAL[] = 0
+                try
+                    @test_logs (:info, r"em dia") match_mode = :any vacancies(2022)
+                    @test mtime(zippath) == before
+                    # ETag local diferente do publicado: baixa a versão nova
+                    BRElections._write_meta(zippath, Dict("etag" => "\"versao-antiga\""))
+                    @test_logs (:info, r"nova versão") match_mode = :any vacancies(2022)
+                    @test BRElections._read_meta(zippath)["etag"] != "\"versao-antiga\""
+                finally
+                    BRElections.REVALIDATE_INTERVAL[] = old_interval
+                end
 
                 # Vários anos, de verdade (vagas: arquivos pequenos)
                 vagas = vacancies([2018, 2022]; uf = "PE", verbose = false)

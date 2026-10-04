@@ -196,8 +196,10 @@ The TSE regenerates its files often — including those of past elections —
 without changing their URLs. So, when a ZIP is already cached, each call makes
 a `HEAD` request and downloads it again only if the published file changed
 (by `ETag`, `Last-Modified` and `Content-Length`). Without network access, the
-cached copy is used. Pass `check_updates = false` to skip the check and keep
-working with the version you already have:
+cached copy is used. The check runs at most once an hour per file (set
+`BRElections_REVALIDATE_HOURS` to change it; `0` checks on every call). Pass
+`check_updates = false` to skip the check and keep working with the version you
+already have:
 
 ```julia
 df = candidates(2022; check_updates = false)

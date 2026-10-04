@@ -8,6 +8,8 @@ function __init__()
     dir = get(ENV, "BRElections_CACHE", "")
     _CACHE[] = isempty(dir) ? @get_scratch!("tse_data") : abspath(dir)
     mkpath(_CACHE[])
+    hours = tryparse(Float64, get(ENV, "BRElections_REVALIDATE_HOURS", ""))
+    hours === nothing || (REVALIDATE_INTERVAL[] = 3600 * hours)
     return nothing
 end
 

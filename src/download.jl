@@ -60,6 +60,15 @@ end
 
 const _VALIDATORS = ("etag", "last-modified", "content-length")
 
+"""
+Intervalo mínimo, em segundos, entre duas verificações do mesmo arquivo no
+TSE. Dentro dele, o cache é usado sem `HEAD` (que custa ~0,3 s por chamada).
+O padrão é 1 hora; pode ser mudado pela variável de ambiente
+`BRElections_REVALIDATE_HOURS` (lida ao carregar o pacote) ou atribuindo a
+`BRElections.REVALIDATE_INTERVAL[]`. `0` verifica sempre.
+"""
+const REVALIDATE_INTERVAL = Ref(3600.0)
+
 _meta_path(dest::AbstractString) = dest * ".meta"
 
 """
@@ -103,6 +112,14 @@ function _write_meta(dest::AbstractString, meta::AbstractDict)
         end
     end
 end
+
+# Verificado há menos de `REVALIDATE_INTERVAL`? (falha de rede não marca)
+function _checked_recently(dest::AbstractString)
+    meta = _meta_path(dest)
+    isfile(meta) && time() - mtime(meta) < REVALIDATE_INTERVAL[]
+end
+
+_fmt_interval(s) = s >= 3600 ? "$(round(s / 3600; digits = 1)) h" : "$(round(Int, s / 60)) min"
 
 const _HTTP_DATE = dateformat"e, dd u yyyy HH:MM:SS \G\M\T"
 
@@ -148,7 +165,9 @@ Se `dest` já existe e `force = false`:
 - com `check_updates = true` (padrão), faz um `HEAD` e só baixa de novo se o
   TSE publicou outra versão (`ETag`/`Last-Modified`/`Content-Length`
   diferentes dos guardados em `<dest>.meta`). Sem rede ou com o CDN
-  recusando, usa o cache e avisa;
+  recusando, usa o cache e avisa. A verificação acontece no máximo uma vez
+  por [`REVALIDATE_INTERVAL`](@ref BRElections.REVALIDATE_INTERVAL) (1 hora,
+  por padrão): o `mtime` do `.meta` marca a última;
 - com `check_updates = false`, usa o cache sem consultar a rede.
 """
 function download_file(url::AbstractString, dest::AbstractString;
@@ -158,6 +177,11 @@ function download_file(url::AbstractString, dest::AbstractString;
     if isfile(dest) && !force
         if !check_updates
             verbose && @info "Cache: usando arquivo já baixado" dest
+            return dest
+        end
+        if _checked_recently(dest)
+            verbose && @info "Cache: verificado no TSE há menos de " *
+                             "$(_fmt_interval(REVALIDATE_INTERVAL[]))" dest
             return dest
         end
         status, remote_meta = remote_validators(url)
@@ -171,9 +195,9 @@ function download_file(url::AbstractString, dest::AbstractString;
         end
         local_mtime = unix2datetime(mtime(dest))
         if !_cache_is_stale(_read_meta(dest), remote_meta, local_mtime)
-            # Cache antigo sem `.meta`: registra os validadores agora, para que
-            # as próximas verificações comparem por ETag.
-            isfile(_meta_path(dest)) || _write_meta(dest, remote_meta)
+            # Marca a verificação (mtime do `.meta`). Cache antigo sem `.meta`:
+            # registra os validadores agora, para as próximas compararem por ETag.
+            isfile(_meta_path(dest)) ? touch(_meta_path(dest)) : _write_meta(dest, remote_meta)
             verbose && @info "Cache: arquivo em dia com o TSE" dest
             return dest
         end
