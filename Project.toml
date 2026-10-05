@@ -1,6 +1,6 @@
 name = "BRElections"
 uuid = "5eec50b8-494f-41b4-8c08-b509cd8ec277"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Dante Bertuzzi"]
 
 [deps]

@@ -7,18 +7,22 @@ type: software
 title: "BRElections.jl: a Julia interface to Brazilian electoral open data (TSE)"
 abstract: >-
   Julia package for Brazil's public electoral data, published by the Tribunal
-  Superior Eleitoral (TSE): automatic download of the open-data ZIP files with
-  retries and atomic writes, a portable local cache, ZIP extraction with
-  on-the-fly ISO-8859-1 to UTF-8 transcoding, chunk-based multithreaded CSV
-  reading with column selection and row filtering applied during import, and
-  type conversion tuned to TSE conventions (dates, #NULO#/#NE# sentinels, and
-  identifier columns kept as String so leading zeros survive).
+  Superior Eleitoral (TSE): candidates, votes, assets, campaign finance and
+  voter profiles from the open-data repository, several years per call;
+  live vote counting from the TSE's results system; and a crosswalk between
+  TSE and IBGE municipality codes. It handles downloads with retries, a
+  portable local cache revalidated against the TSE, streaming ZIP extraction
+  with ISO-8859-1 to UTF-8 transcoding in constant memory, multithreaded CSV
+  reading with column selection and row filtering during import, and type
+  conversion tuned to TSE conventions (dates, #NULO#/#NE# sentinels, money
+  columns with either decimal separator, and identifier columns kept as
+  String so leading zeros survive).
 authors:
   - family-names: Bertuzzi
     given-names: Dante
     email: dantesbertuzzi@gmail.com
-version: 0.1.1
-date-released: "2026-08-31"
+version: 0.2.0
+date-released: "2026-10-04"
 license: MIT
 doi: 10.5281/zenodo.22182707
 identifiers:
@@ -27,9 +31,6 @@ identifiers:
     description: >-
       Concept DOI — always resolves to the most recent
       version of BRElections.jl.
-  - type: doi
-    value: 10.5281/zenodo.22182708
-    description: DOI of version 0.1.1.
 repository-code: "https://github.com/dantebertuzzi/BRElections.jl"
 url: "https://dantebertuzzi.github.io/BRElections.jl/stable"
 keywords:
