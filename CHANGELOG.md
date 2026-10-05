@@ -47,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `filter` is about twice as fast end to end on large files (`section_votes`
+  for PE, 2.7 million rows: 2.6 s → 1.4 s): the predicate itself runs ~13×
+  faster, since `row.nr_turno` is now resolved to its column at compile time
+  instead of on every row. A predicate that returns `missing` (a comparison
+  on a column with missing values) now raises an error explaining how to
+  handle it.
 - `NR_CEP*` and `NR_TELEFONE*` columns are kept as `String`, like the other
   identifiers: CEPs starting with zero (all of São Paulo state, for instance)
   lost it when read as integers.

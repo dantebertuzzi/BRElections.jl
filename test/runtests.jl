@@ -577,6 +577,14 @@ end
         @test_throws ArgumentError read_tse_csv(csv; filter = row -> row.nao_existe == 1)
         # erro do próprio predicado não é engolido
         @test_throws DomainError read_tse_csv(csv; filter = row -> throw(DomainError(1)))
+        # predicado que devolve `missing`: erro que explica o que fazer
+        err = try read_tse_csv(csv; filter = row -> row.nr_cpf_candidato == "01234567890"); catch e; e; end
+        @test err isa ArgumentError && occursin("coalesce", err.msg)
+        # caixa mista, nome vindo de variável, hasproperty e propertynames
+        col = "Nr_Turno"
+        @test nrow(read_tse_csv(csv; filter = row -> getproperty(row, Symbol(col)) == 1)) == 3
+        @test nrow(read_tse_csv(csv; filter = row -> hasproperty(row, :sg_uf) && !hasproperty(row, :xyz))) == 4
+        @test nrow(read_tse_csv(csv; filter = row -> :NR_TURNO in propertynames(row))) == 4
     end
 
     @testset "filter — caminho em chunks" begin
