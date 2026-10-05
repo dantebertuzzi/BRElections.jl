@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Provenance metadata on every `DataFrame` returned by `elections` and its
+  shortcuts: `metadata(df, "fontes")` records, per TSE ZIP, the URL, the CSVs
+  read, the published version (`Last-Modified`, `ETag`), when it was
+  downloaded and last checked against the TSE, and the `columns`/`filter` used
+  at import; plus `versao_brelections` and `versao_julia`. Stacking several
+  years keeps one entry per year. The metadata follows `df` through `select`,
+  `subset`, `transform` and so on.
+- `sources(df)` shows that provenance as a table, and `cite(df; style)` turns it
+  into references for the TSE files and for the package version that imported
+  them, in ABNT (NBR 6023), APA 7 or BibTeX.
+
 - Support for CSV.jl 1.x (compat `"0.10, 1"`), which reads TSE files about
   5× faster (93 MB file: 0.73 s → 0.14 s; with `filter`, 0.83 s → 0.27 s). On
   Julia 1.9, where CSV.jl 1.x is not available, 0.10 is used as before. Results

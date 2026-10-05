@@ -976,6 +976,73 @@ end
         @test_throws ArgumentError candidates([2018, 2019])                         # ano ímpar
     end
 
+    @testset "Proveniência — sources e cite (offline)" begin
+        old_cache = cache_dir()
+        set_cache_dir!(mktempdir())
+        etag = "\"abc-123\""
+        for y in (2018, 2022)
+            zp = BRElections._zip_path(:candidates, dataset_url(:candidates, y))
+            mkpath(dirname(zp))
+            w = ZipFile.Writer(zp)
+            for uf in ("PE", "BA")
+                f = ZipFile.addfile(w, "consulta_cand_$(y)_$(uf).csv")
+                write(f, "ANO_ELEICAO;SG_UF;NR_TURNO\n$y;$uf;1\n$y;$uf;2\n")
+            end
+            close(w)
+            BRElections._write_meta(zp, Dict("etag" => etag,
+                                             "last-modified" => "Tue, 04 Oct 2022 10:20:30 GMT"))
+        end
+        try
+            df = candidates(2022; uf = "PE", columns = [:SG_UF, :nr_turno], filter = r -> r.nr_turno == 1,
+                            verbose = false, check_updates = false)
+            src = sources(df)
+            @test nrow(src) == 1
+            r = src[1, :]
+            @test r.dataset == :candidates && r.ano == 2022 && r.uf == "PE"
+            @test r.url == dataset_url(:candidates, 2022)
+            @test r.arquivos == ["consulta_cand_2022_PE.csv"]
+            @test r.publicado_em == DateTime(2022, 10, 4, 10, 20, 30)
+            @test r.etag == etag
+            @test r.baixado_em isa DateTime && r.verificado_em isa DateTime
+            @test r.colunas == ["sg_uf", "nr_turno"]
+            @test r.filtrado
+            @test metadata(df, "versao_brelections") == string(pkgversion(BRElections))
+            @test metadata(df, "dataset") == "candidates"
+
+            # acompanha operações do DataFrames.jl
+            @test nrow(sources(select(df, :sg_uf))) == 1
+
+            # sem filtro/colunas, Brasil inteiro
+            r = sources(candidates(2022; verbose = false, check_updates = false))[1, :]
+            @test ismissing(r.uf) && ismissing(r.colunas) && !r.filtrado
+            @test sort(r.arquivos) == ["consulta_cand_2022_BA.csv", "consulta_cand_2022_PE.csv"]
+
+            # vários anos: uma fonte por ano, mesmo com o vcat
+            many = candidates([2018, 2022]; uf = "PE", verbose = false, check_updates = false)
+            @test sources(many).ano == [2018, 2022]
+
+            # citações
+            acc = BRElections._abnt_date(Date(sources(df).verificado_em[1]))
+            abnt = cite(df)
+            @test occursin("BRASIL. Tribunal Superior Eleitoral. Repositório de dados eleitorais: " *
+                           "Candidaturas registradas (consulta_cand) — 2022, PE. Brasília: TSE, 2022.", abnt)
+            @test occursin("Acesso em: $acc.", abnt)
+            @test occursin("BERTUZZI, Dante. BRElections.jl", abnt)
+            @test occursin("Versão $(pkgversion(BRElections))", abnt)
+            @test count("BRASIL. Tribunal", cite(many)) == 2
+            @test occursin("[Data set]. Retrieved ", cite(df; style = :apa))
+            bib = cite(many; style = :bibtex)
+            @test occursin("@misc{tse_candidates_2018_pe,", bib) && occursin("@misc{tse_candidates_2022_pe,", bib)
+            @test occursin("note = {ETag abc-123}", bib)
+            @test occursin("@software{bertuzzi_brelections_", bib)
+            @test_throws ArgumentError cite(df; style = :vancouver)
+            @test_throws ArgumentError sources(DataFrame(a = 1))
+            @test BRElections._abnt_date(Date(2026, 5, 3)) == "3 maio 2026"
+        finally
+            set_cache_dir!(old_cache)
+        end
+    end
+
     @testset "cache_info e clear_cache! por dataset" begin
         old_cache = cache_dir()
         cache = set_cache_dir!(mktempdir())

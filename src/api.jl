@@ -98,7 +98,9 @@ function elections(year::Integer;
     files = ds.by_uf ? csvs : select_csvs(csvs; uf)
     verbose && @info "Importando $(length(files)) arquivo(s)" basename.(files)
 
-    read_tse_csvs(files; columns, filter, normalize_names, ntasks)
+    df = read_tse_csvs(files; columns, filter, normalize_names, ntasks)
+    _set_provenance!(df, [_source_record(t, y, uf, url, zippath, files;
+                                         columns, filtered = filter !== nothing)])
 end
 
 # --- Vários anos --------------------------------------------------------
@@ -164,14 +166,17 @@ function elections(years::AbstractVector{<:Integer};
 
     cols = _expand_aliases(columns)
     dfs = DataFrame[]
+    records = NamedTuple[]
     for y in ys
         verbose && @info "Ano $y ($(findfirst(==(y), ys)) de $(length(ys)))"
         df = elections(y; type = t, uf, columns = cols, normalize_names, verbose, kwargs...)
+        append!(records, metadata(df, "fontes"))
         _apply_aliases!(df)
         insertcols!(df, 1, (normalize_names ? "ano" : "ANO") => fill(y, nrow(df)))
         push!(dfs, df)
     end
-    reduce(vcat, _harmonize_types!(dfs); cols = :union)
+    # O `vcat` descarta metadados que diferem entre as tabelas, como as fontes.
+    _set_provenance!(reduce(vcat, _harmonize_types!(dfs); cols = :union), records)
 end
 
 # --- Funções de conveniência --------------------------------------------

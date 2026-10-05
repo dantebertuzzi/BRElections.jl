@@ -52,6 +52,13 @@ available_files
 dataset_url
 ```
 
+## Proveniência e citação
+
+```@docs
+sources
+cite
+```
+
 ## Cache
 
 ```@docs

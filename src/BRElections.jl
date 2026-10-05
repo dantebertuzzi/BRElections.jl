@@ -54,7 +54,8 @@ export elections,
        municipalities, live_results, OFFICES,
        available_datasets, available_files, dataset_url,
        cache_dir, set_cache_dir!, clear_cache!, cache_info,
-       read_tse_csv
+       read_tse_csv,
+       sources, cite
 
 include("constants.jl")
 include("cache.jl")
@@ -62,6 +63,7 @@ include("download.jl")
 include("extract.jl")
 include("parse.jl")
 include("api.jl")
+include("provenance.jl")
 include("municipalities.jl")
 include("live.jl")
 

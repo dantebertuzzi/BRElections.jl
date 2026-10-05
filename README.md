@@ -34,6 +34,8 @@ authorisation is required.
   preserved as `String` (leading zeros intact);
 - Column name normalisation (lowercase, optional);
 - **Column** and **row** filters applied during import to minimise memory usage;
+- Provenance on every table (`sources`) and ready references for the data and
+  the package (`cite`, in ABNT, APA or BibTeX);
 - Automated test suite (offline by default; optional network tests).
 
 ## Installation
@@ -280,6 +282,17 @@ different numbers:
 > BRASIL. Tribunal Superior Eleitoral. *Repositório de dados eleitorais*:
 > dados abertos. Brasília: TSE, 2026. Available at:
 > https://cdn.tse.jus.br/estatistica/sead/odsele/. Accessed: 31 Aug. 2026.
+
+You don't need to assemble this by hand: every table returned by the package
+carries its provenance (`sources`), and `cite` writes the references — one per
+TSE file, with the published version and access date, plus one for the package
+version that imported it:
+
+```julia
+cand = candidates(2022; uf = "PE")
+sources(cand)                      # URL, TSE version (Last-Modified/ETag), download date, filters
+print(cite(cand))                  # ABNT; also style = :apa or :bibtex
+```
 
 State the **year and the dataset** you used (`candidates`, `candidate_votes`,
 `section_votes`, …), since each is a separate published file with its own
