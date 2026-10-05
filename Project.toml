@@ -15,7 +15,7 @@ Unicode = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
 ZipFile = "a5390f91-8eb1-5f08-bee0-b1d1ffed6cea"
 
 [compat]
-CSV = "0.10"
+CSV = "0.10, 1"
 DataFrames = "1.4"
 Dates = "1"
 Downloads = "1"

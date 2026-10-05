@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Support for CSV.jl 1.x (compat `"0.10, 1"`), which reads TSE files about
+  5× faster (93 MB file: 0.73 s → 0.14 s; with `filter`, 0.83 s → 0.27 s). On
+  Julia 1.9, where CSV.jl 1.x is not available, 0.10 is used as before. Results
+  are the same under both versions: checked on ten real datasets (names,
+  types, values and pooling identical). CSV.jl 1.0 no longer takes functions in
+  `types`/`select`, so the columns to keep as `String` and the `columns`
+  selection are resolved against the file header first; it also reads a quoted
+  empty field (`""`, which the TSE uses for every empty field) as present empty
+  text, so those are turned into `missing` and the affected columns get the
+  type CSV.jl 0.10 inferred (integer, float or `dd/mm/yyyy` date).
+
 ## [0.2.0] - 2026-10-05
 
 Live vote counting, campaign finance, a TSE ↔ IBGE municipality crosswalk,

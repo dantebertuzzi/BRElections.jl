@@ -17,8 +17,20 @@ const PARALLEL_MIN_BYTES = 2^20
 
 _force_string(name::AbstractString) = any(p -> startswith(uppercase(name), p), STRING_PREFIXES)
 
-# Função `types` passada ao CSV.jl: força String nas colunas de identificadores.
-_tse_types(i, name) = _force_string(String(name)) ? String : nothing
+# Nomes das colunas, lidos da primeira linha. O CSV.jl 1.x não aceita funções
+# em `types` nem em `select` (a 0.10 aceitava), então as duas coisas são
+# resolvidas contra o cabeçalho antes da leitura, com listas e dicionários que
+# as duas versões entendem.
+function _read_header(path::AbstractString)
+    line = open(readline, path)
+    Symbol[Symbol(strip(strip(f), '"')) for f in split(line, ';')]
+end
+
+# `types`: força String nas colunas de identificadores.
+function _string_types(header)
+    forced = Dict{Symbol,Type}(n => String for n in header if _force_string(String(n)))
+    isempty(forced) ? nothing : forced
+end
 
 # Valores monetários (colunas `VR_*`): o TSE usa vírgula decimal em alguns
 # arquivos ("1500,00", prestação de contas e bens) e ponto em outros
@@ -52,23 +64,64 @@ function _convert_money_columns!(df::DataFrame)
     df
 end
 
-# Constrói o `select` do CSV.jl a partir de uma lista de colunas,
-# com correspondência insensível a maiúsculas/minúsculas.
-function _column_selector(columns)
-    wanted = Set(lowercase(String(c)) for c in columns)
-    (i, name) -> lowercase(String(name)) in wanted
+# Campos vazios entre aspas (`""`), que o TSE usa para todo campo vazio. A 0.10
+# do CSV.jl os lia como `missing` (pelo `missingstring`); a 1.x os lê como
+# texto vazio presente, e um único `""` faz uma coluna de datas ou números
+# virar texto. Com a 1.x, troca `""` por `missing` nas colunas de texto e, nas
+# que só eram texto por causa deles, refaz a inferência da 0.10: Int, Float64
+# ou data `dd/mm/yyyy`. Identificadores forçados como String não são retipados.
+const _QUOTED_EMPTY_IS_TEXT = pkgversion(CSV) >= v"1"
+
+function _retype(col::AbstractVector)
+    vals = collect(skipmissing(col))
+    isempty(vals) && return Vector{Missing}(missing, length(col))
+    for parser in (s -> tryparse(Int, s), s -> tryparse(Float64, s),
+                   s -> tryparse(Date, s, TSE_DATEFORMAT))
+        parsed = map(x -> ismissing(x) ? missing : parser(x), col)
+        any(isnothing, parsed) && continue
+        T = typeof(parser(first(vals)))
+        return any(ismissing, parsed) ? Vector{Union{Missing,T}}(parsed) : Vector{T}(parsed)
+    end
+    col
 end
 
-_common_csv_kwargs(; columns) = (
-    delim = ';',
-    quotechar = '"',
-    missingstring = TSE_MISSING,
-    dateformat = TSE_DATEFORMAT,
-    stringtype = String,
-    types = _tse_types,
-    select = columns === nothing ? nothing : _column_selector(columns),
-    validate = false,
-)
+function _quoted_empty_to_missing!(df::DataFrame)
+    _QUOTED_EMPTY_IS_TEXT || return df
+    for name in names(df)
+        col = df[!, name]
+        nonmissingtype(eltype(col)) <: AbstractString || continue
+        any(x -> !ismissing(x) && isempty(x), col) || continue
+        cleaned = Union{Missing,String}[ismissing(x) || isempty(x) ? missing : String(x) for x in col]
+        df[!, name] = _force_string(name) ? cleaned : _retype(cleaned)
+    end
+    df
+end
+
+# Ajustes depois da leitura, antes de qualquer `filter`.
+_postprocess!(df::DataFrame) = _convert_money_columns!(_quoted_empty_to_missing!(df))
+
+# `select`: as colunas pedidas que existem no arquivo, sem distinguir
+# maiúsculas. Nomes ausentes são ignorados (o CSV.jl 1.x daria erro), o que
+# importa ao ler vários anos, em que nem toda coluna existe em todos.
+function _select_columns(header, columns)
+    wanted = Set(lowercase(String(c)) for c in columns)
+    Symbol[n for n in header if lowercase(String(n)) in wanted]
+end
+
+function _common_csv_kwargs(path; columns)
+    header = _read_header(path)
+    (
+        delim = ';',
+        quotechar = '"',
+        missingstring = TSE_MISSING,
+        dateformat = TSE_DATEFORMAT,
+        stringtype = String,
+        pool = (0.2, 500),      # padrão da 0.10; a 1.x passou a não agrupar
+        types = _string_types(header),
+        select = columns === nothing ? nothing : _select_columns(header, columns),
+        validate = false,
+    )
+end
 
 """
     read_tse_csv(path; kwargs...) -> DataFrame
@@ -105,11 +158,11 @@ function read_tse_csv(path::AbstractString;
                       normalize_names::Bool = true,
                       ntasks::Int = max(Threads.nthreads(), 1))
     isfile(path) || throw(ArgumentError("Arquivo não encontrado: $path"))
-    kw = _common_csv_kwargs(; columns)
+    kw = _common_csv_kwargs(path; columns)
 
     df = if filter === nothing
         # Em arquivos pequenos, paralelizar não ajuda e o CSV.jl emite aviso.
-        _convert_money_columns!(
+        _postprocess!(
             CSV.read(path, DataFrame; ntasks = filesize(path) < PARALLEL_MIN_BYTES ? 1 : ntasks, kw...))
     else
         _read_tse_csv_with_filter(path, filter, ntasks, kw)
@@ -143,7 +196,7 @@ Base.propertynames(r::_AnyCaseRow) = propertynames(getfield(r, :row))
 
 # Converte os valores monetários antes, para o predicado já ver números.
 _apply_filter(filter, df::DataFrame) =
-    Base.filter(row -> filter(_AnyCaseRow(row)), _convert_money_columns!(df))
+    Base.filter(row -> filter(_AnyCaseRow(row)), _postprocess!(df))
 
 # Com `filter`, ler o arquivo inteiro e filtrar depois é bem mais rápido que
 # CSV.Chunks (medido: 0,8 s contra 2,5 s num CSV de 93 MB); os chunks só valem
@@ -168,18 +221,22 @@ function _read_tse_csv_with_filter(path, filter, ntasks, kw)
         return _apply_filter(filter, CSV.read(path, DataFrame; ntasks = nt, kw...))
     end
 
-    parts = DataFrame[]
-    try
-        for chunk in CSV.Chunks(path; ntasks = clamp(ntasks, 2, 4), kw...)
-            part = _apply_filter(filter, DataFrame(chunk))
-            nrow(part) > 0 && push!(parts, part)
-        end
+    # Só a construção do CSV.Chunks fica no `try`: se o CSV.jl não conseguir
+    # particionar o arquivo, lê inteiro. Erros durante a iteração — inclusive
+    # um ArgumentError do predicado do usuário — são propagados.
+    chunks = try
+        CSV.Chunks(path; ntasks = clamp(ntasks, 2, 4), kw...)
     catch e
-        # Só o caso "não deu para particionar" tem alternativa; qualquer outro
-        # ArgumentError (inclusive vindo do predicado do usuário) é propagado.
-        e isa ArgumentError && occursin("unable to iterate chunks", e.msg) || rethrow()
-        @warn "Falha ao dividir arquivo em chunks; lendo inteiro e filtrando em memória." path
-        parts = [_apply_filter(filter, CSV.read(path, DataFrame; ntasks = 1, kw...))]
+        e isa ArgumentError || rethrow()
+        @warn "Falha ao dividir arquivo em chunks; lendo inteiro e filtrando em memória." path exception = e
+        nothing
+    end
+    chunks === nothing &&
+        return _apply_filter(filter, CSV.read(path, DataFrame; ntasks = 1, kw...))
+    parts = DataFrame[]
+    for chunk in chunks
+        part = _apply_filter(filter, DataFrame(chunk))
+        nrow(part) > 0 && push!(parts, part)
     end
     isempty(parts) ? _empty_like(path, kw) : reduce(vcat, parts; cols = :union)
 end
@@ -188,7 +245,7 @@ end
 function _empty_like(path, kw)
     df = CSV.read(path, DataFrame; limit = 0, kw...)
     empty!(df)
-    _convert_money_columns!(df)
+    _postprocess!(df)
 end
 
 """
