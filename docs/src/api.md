@@ -51,5 +51,6 @@ dataset_url
 ```@docs
 cache_dir
 set_cache_dir!
+cache_info
 clear_cache!
 ```

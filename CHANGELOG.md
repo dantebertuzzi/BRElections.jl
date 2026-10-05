@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cache_info()`: what is in the local cache, one row per ZIP, with the
+  datasets it serves, year, state, ZIP and extracted sizes, and when it was
+  last checked against the TSE.
+- `clear_cache!(type; year, extracted_only)`: frees one dataset (all years or
+  some) instead of wiping the whole cache; `extracted_only = true` keeps the
+  ZIPs and drops the extracted CSVs, which are rebuilt without downloading.
+  Returns the bytes freed.
+
 - Several years at once: `elections`, the shortcuts and `campaign_finance`
   accept a range or vector of years (`candidates(2014:4:2022)`) and stack them
   with an `ano` column. All years are validated before any download. Columns

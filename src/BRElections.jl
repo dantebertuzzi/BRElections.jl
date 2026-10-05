@@ -53,7 +53,7 @@ export elections,
        campaign_finance,
        municipalities, live_results,
        available_datasets, available_files, dataset_url,
-       cache_dir, set_cache_dir!, clear_cache!,
+       cache_dir, set_cache_dir!, clear_cache!, cache_info,
        read_tse_csv
 
 include("constants.jl")

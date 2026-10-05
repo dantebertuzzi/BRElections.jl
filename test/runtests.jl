@@ -929,6 +929,70 @@ end
         @test_throws ArgumentError candidates([2018, 2019])                         # ano ímpar
     end
 
+    @testset "cache_info e clear_cache! por dataset" begin
+        old_cache = cache_dir()
+        cache = set_cache_dir!(mktempdir())
+        try
+            @test nrow(cache_info()) == 0
+            # Cache simulado: dois anos de votação, um ZIP por UF, prestação de
+            # contas (ZIP compartilhado por quatro tabelas) e lixo que não é dataset.
+            function fake(type, year; uf = nothing, zip = 2^20, csv = 3 * 2^20, meta = true)
+                url = DATASETS_URL(type, year, uf)
+                zp = BRElections._zip_path(type, url)
+                mkpath(dirname(zp)); write(zp, zeros(UInt8, zip))
+                meta && BRElections._write_meta(zp, Dict("etag" => "\"x\""))
+                d = BRElections._extract_dir(zp); mkpath(d)
+                write(joinpath(d, "dados.csv"), zeros(UInt8, csv))
+                zp
+            end
+            DATASETS_URL(t, y, uf) = uf === nothing ? dataset_url(t, y) : dataset_url(t, y; uf)
+            fake(:candidate_votes, 2018)
+            fake(:candidate_votes, 2022; meta = false)
+            fake(:section_votes, 2022; uf = "PE")
+            fake(:candidate_revenue, 2022; zip = 4 * 2^20)
+            fake(:candidates, 2022)
+            write(joinpath(cache, "consulta_cand", "outra_coisa_2022.zip"), "x")      # ignorado
+            mkpath(joinpath(cache, "resultados", "comum")); write(joinpath(cache, "resultados", "comum", "x.json"), "{}")
+
+            info = cache_info()
+            @test nrow(info) == 6
+            @test names(info) == ["datasets", "year", "uf", "zip_mb", "extracted_mb", "checked_at", "path"]
+            fin = only(subset(info, :datasets => ByRow(d -> :candidate_revenue in d)))
+            @test fin.datasets == [:candidate_expenses_contracted, :candidate_expenses_paid,
+                                   :candidate_revenue, :candidate_revenue_original_donor]
+            @test fin.zip_mb == 4.0 && fin.extracted_mb == 3.0
+            @test info.zip_mb[1] == 4.0                                  # maior primeiro
+            sec = only(subset(info, :datasets => ByRow(==([:section_votes]))))
+            @test sec.uf == "PE" && sec.year == 2022
+            v22 = only(subset(info, :datasets => ByRow(==([:candidate_votes])), :year => ByRow(isequal(2022))))
+            @test ismissing(v22.checked_at)                              # sem .meta
+            v18 = only(subset(info, :datasets => ByRow(==([:candidate_votes])), :year => ByRow(isequal(2018))))
+            @test abs(v18.checked_at - now()) < Minute(5)                # horário local
+            @test any(d -> d == [:municipalities], info.datasets)
+
+            # só os CSVs extraídos: o ZIP fica
+            @test clear_cache!(:candidate_votes; year = 2018, extracted_only = true) == 3 * 2^20
+            v18 = only(subset(cache_info(), :datasets => ByRow(==([:candidate_votes])), :year => ByRow(isequal(2018))))
+            @test v18.zip_mb == 1.0 && v18.extracted_mb == 0.0
+            # um ano: ZIP, .meta e extraídos
+            freed = clear_cache!(:candidate_votes; year = [2018])
+            @test freed >= 2^20
+            @test !isfile(v18.path) && !isfile(v18.path * ".meta")
+            @test nrow(subset(cache_info(), :datasets => ByRow(==([:candidate_votes])))) == 1
+            # todos os anos; uma tabela de prestação de contas limpa o ZIP das quatro
+            clear_cache!(:candidate_votes)
+            clear_cache!(:candidate_expenses_paid)
+            left = cache_info()
+            @test !any(d -> :candidate_votes in d || :candidate_revenue in d, left.datasets)
+            @test any(d -> d == [:candidates], left.datasets)              # o resto fica
+            @test isfile(joinpath(cache, "consulta_cand", "outra_coisa_2022.zip"))
+            @test clear_cache!(:assets) == 0                                # nada em cache
+            @test_throws ArgumentError clear_cache!(:nao_existe)
+        finally
+            set_cache_dir!(old_cache)
+        end
+    end
+
     @testset "url_exists — erro de rede/URL retorna false" begin
         @test BRElections.url_exists("not a valid url") == false
         @test BRElections.url_status("not a valid url") == 0

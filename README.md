@@ -186,8 +186,16 @@ julia --project=. examples/live_results.jl presidente --watch 60
 ```julia
 cache_dir()          # where ZIPs and CSVs are stored
 set_cache_dir!(dir)  # change cache directory at runtime
+cache_info()         # what is cached: one row per ZIP, with sizes and last check
 clear_cache!()       # wipe all cached data
+
+clear_cache!(:candidate_votes; year = 2018)             # one dataset (and year)
+clear_cache!(:section_votes; extracted_only = true)     # keep the ZIPs, drop the CSVs
 ```
+
+The extracted CSVs usually take several times the size of their ZIP and are
+rebuilt from it without a new download, so `extracted_only = true` is a cheap
+way to free space.
 
 The `BRElections_CACHE` environment variable sets the directory at package load
 time.
