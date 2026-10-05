@@ -321,6 +321,8 @@ end
     end
 
     @testset "Funções de conveniência" begin
+        # o docstring de `elections` não pode se descolar da função
+        @test occursin("Baixa (com cache)", string(@doc elections))
         for func in (candidates, candidate_votes, party_votes, vote_details,
                      assets, coalitions, vacancies, voter_profile)
             @test func isa Function
@@ -1093,6 +1095,67 @@ end
             df = section_votes([2022]; uf = ["PE", "BA"], verbose = false, check_updates = false)
             @test nrow(df) == 4 && names(df)[1] == "ano"
             @test_throws ArgumentError section_votes([2020, 2022]; uf = ["PE", "XX"])
+        finally
+            set_cache_dir!(old_cache)
+        end
+    end
+
+    @testset "Locais de votação — CSV único, coordenadas e CEP (offline)" begin
+        @test BRElections._partitioned(["x_2022_PE.csv", "x_2022_BRASIL.csv"])
+        @test !BRElections._partitioned(["eleitorado_local_votacao_2022.csv"])
+        @test dataset_url(:polling_places, 2010) ==
+              "https://cdn.tse.jus.br/estatistica/sead/odsele/eleitorado_locais_votacao/eleitorado_local_votacao_2010.zip"
+        @test_throws ArgumentError dataset_url(:polling_places, 2008)
+
+        old_cache = cache_dir()
+        set_cache_dir!(mktempdir())
+        # Até 2024: um CSV só, sem UF no nome; ponto decimal e -1 sem coordenada.
+        # 2026: um CSV por UF e vírgula decimal.
+        header = "NR_TURNO;SG_UF;NM_LOCAL_VOTACAO;NR_CEP;NR_TELEFONE_LOCAL;NR_LATITUDE;NR_LONGITUDE"
+        single = join([header,
+            "1;\"PE\";\"ESCOLA A\";\"50000000\";\"+558133330000\";\"-8.05\";\"-34.9\"",
+            "2;\"PE\";\"ESCOLA A\";\"50000000\";\"+558133330000\";\"-8.05\";\"-34.9\"",
+            "1;\"PE\";\"ESCOLA B\";\"55190000\";\"-1\";\"-1\";\"-1\"",
+            "1;\"SP\";\"ESCOLA C\";\"01310100\";\"-1\";\"-23.56\";\"-46.65\"",
+            "1;\"BA\";\"ESCOLA D\";\"40000000\";\"-1\";\"-12.97\";\"-38.5\""], "\n") * "\n"
+        zp = BRElections._zip_path(:polling_places, dataset_url(:polling_places, 2022))
+        mkpath(dirname(zp))
+        w = ZipFile.Writer(zp)
+        write(ZipFile.addfile(w, "eleitorado_local_votacao_2022.csv"), single)
+        close(w)
+        zp = BRElections._zip_path(:polling_places, dataset_url(:polling_places, 2026))
+        w = ZipFile.Writer(zp)
+        for (uf, row) in (("PE", "1;\"PE\";\"ESCOLA A\";\"50000000\";\"-1\";\"-8,05\";\"-34,9\""),
+                          ("SP", "1;\"SP\";\"ESCOLA C\";\"01310100\";\"-1\";\"-23,56\";\"-46,65\""))
+            write(ZipFile.addfile(w, "eleitorado_local_votacao_2026_$(uf).csv"), header * "\n" * row * "\n")
+        end
+        close(w)
+        kw = (verbose = false, check_updates = false)
+        try
+            df = polling_places(2022; kw...)
+            @test nrow(df) == 5
+            @test eltype(df.nr_cep) == String && df.nr_cep[4] == "01310100"       # zero à esquerda
+            @test eltype(df.nr_latitude) == Union{Missing,Float64}
+            @test isequal(df.nr_latitude, [-8.05, -8.05, missing, -23.56, -12.97])
+            @test isequal(df.nr_telefone_local, ["+558133330000", "+558133330000", missing, missing, missing])
+
+            # uf num ZIP sem divisão por UF: filtro de linhas por SG_UF
+            pe = polling_places(2022; uf = "pe", kw...)
+            @test nrow(pe) == 3 && all(==("PE"), pe.sg_uf)
+            @test sources(pe).uf == ["PE"] && !sources(pe).filtrado[1]
+            # ... mesmo sem pedir SG_UF em `columns`, que não volta na tabela
+            pe1 = polling_places(2022; uf = "PE", columns = [:nr_turno, :nm_local_votacao],
+                                 filter = r -> r.nr_turno == 1, kw...)
+            @test names(pe1) == ["nr_turno", "nm_local_votacao"]
+            @test pe1.nm_local_votacao == ["ESCOLA A", "ESCOLA B"]
+            @test sources(pe1).filtrado[1]
+            two = polling_places(2022; uf = ["SP", "BA"], columns = [:SG_UF], normalize_names = false, kw...)
+            @test names(two) == ["SG_UF"] && sort(two.SG_UF) == ["BA", "SP"]
+
+            # 2026: arquivos por UF, vírgula decimal
+            df = polling_places(2026; uf = "SP", kw...)
+            @test df.nr_cep == ["01310100"] && df.nr_latitude == [-23.56] && df.nr_longitude == [-46.65]
+            @test_throws ArgumentError polling_places(2026; uf = "BA", kw...)        # UF sem arquivo
         finally
             set_cache_dir!(old_cache)
         end

@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `section_votes(year; uf = "BR")`: presidential votes by section. The TSE does
   not include them in the state ZIPs, only in this national file (general
   elections), which `dataset_url` used to refuse.
+- `polling_places` (`:polling_places`): polling places from 2010 on, one row per
+  section and round, with address, CEP, latitude/longitude and voters. The TSE
+  ships it as a single national CSV up to 2024 and per state from 2026; with a
+  single CSV, `uf` filters rows by `SG_UF` while reading. Coordinates are
+  `Float64` whether written with a decimal point or comma, and `missing` where
+  the TSE writes `-1`.
 - `sources(df)` shows that provenance as a table, and `cite(df; style)` turns it
   into references for the TSE files and for the package version that imported
   them, in ABNT (NBR 6023), APA 7 or BibTeX.
@@ -38,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty field (`""`, which the TSE uses for every empty field) as present empty
   text, so those are turned into `missing` and the affected columns get the
   type CSV.jl 0.10 inferred (integer, float or `dd/mm/yyyy` date).
+
+### Changed
+
+- `NR_CEP*` and `NR_TELEFONE*` columns are kept as `String`, like the other
+  identifiers: CEPs starting with zero (all of São Paulo state, for instance)
+  lost it when read as integers.
 
 ## [0.2.0] - 2026-10-05
 

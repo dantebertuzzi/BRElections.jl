@@ -135,8 +135,14 @@ _matches_member(name::AbstractString, member::AbstractString) =
 # (pré-extração, para não descompactar/transcodificar dados que não serão
 # usados — alguns ZIPs nacionais do TSE têm um "_BRASIL.csv" que é a
 # concatenação de todos os estados, várias vezes maior que qualquer UF isolada).
+# Os arquivos do ZIP são divididos por UF (`..._PE.csv`, `..._BRASIL.csv`)?
+_partitioned(names) = any(n -> occursin(r"_([A-Z]{2}|BRASIL)\.(csv|txt)$"i, basename(n)), names)
+
 function _select_uf_names(names::AbstractVector{<:AbstractString};
                           uf::Union{Nothing,AbstractString,AbstractVector{<:AbstractString}} = nothing)
+    # ZIP com um CSV só, sem divisão por UF (locais de votação até 2024): lê
+    # tudo, e `elections` filtra as linhas pela coluna SG_UF.
+    uf === nothing || _partitioned(names) || return collect(names)
     if uf isa AbstractVector
         return reduce(vcat, (_select_uf_names(names; uf = u) for u in uf); init = String[])
     end

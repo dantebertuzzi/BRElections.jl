@@ -10,7 +10,7 @@ const TSE_DATEFORMAT = dateformat"dd/mm/yyyy"
 
 # Colunas que devem permanecer como String para preservar zeros à esquerda
 # ou por serem identificadores, não quantidades.
-const STRING_PREFIXES = ("NR_CPF", "NR_TITULO", "NR_PROCESSO", "NR_PROTOCOLO")
+const STRING_PREFIXES = ("NR_CPF", "NR_TITULO", "NR_PROCESSO", "NR_PROTOCOLO", "NR_CEP", "NR_TELEFONE")
 
 # Abaixo deste tamanho a leitura sem filtro é feita com uma única task.
 const PARALLEL_MIN_BYTES = 2^20
@@ -97,8 +97,32 @@ function _quoted_empty_to_missing!(df::DataFrame)
     df
 end
 
+# Coordenadas dos locais de votação: o TSE usa ponto decimal em alguns anos
+# ("-9.827566") e vírgula em outros ("-10,0183533"), e `-1` para local sem
+# coordenada (nenhum ponto do Brasil tem latitude ou longitude exatamente -1).
+# Viram Float64, com `-1` como `missing`. No telefone, `-1` também é ausência.
+const _COORDINATE_COLUMNS = ("NR_LATITUDE", "NR_LONGITUDE")
+
+function _convert_coordinates!(df::DataFrame)
+    for name in names(df)
+        u = uppercase(name)
+        col = df[!, name]
+        if u in _COORDINATE_COLUMNS
+            T = nonmissingtype(eltype(col))
+            T <: Union{Real,AbstractString} || continue
+            parsed = Union{Missing,Float64}[ismissing(x) ? missing :
+                x isa AbstractString ? something(_parse_money(x), NaN) : Float64(x) for x in col]
+            any(x -> x isa Float64 && isnan(x), parsed) && continue      # texto não numérico
+            df[!, name] = Union{Missing,Float64}[isequal(x, -1.0) ? missing : x for x in parsed]
+        elseif startswith(u, "NR_TELEFONE") && nonmissingtype(eltype(col)) <: AbstractString
+            df[!, name] = Union{Missing,String}[isequal(x, "-1") ? missing : x for x in col]
+        end
+    end
+    df
+end
+
 # Ajustes depois da leitura, antes de qualquer `filter`.
-_postprocess!(df::DataFrame) = _convert_money_columns!(_quoted_empty_to_missing!(df))
+_postprocess!(df::DataFrame) = _convert_coordinates!(_convert_money_columns!(_quoted_empty_to_missing!(df)))
 
 # `select`: as colunas pedidas que existem no arquivo, sem distinguir
 # maiúsculas. Nomes ausentes são ignorados (o CSV.jl 1.x daria erro), o que

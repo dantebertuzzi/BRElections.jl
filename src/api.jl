@@ -2,6 +2,40 @@
 # API pública de alto nível
 # ---------------------------------------------------------------------------
 
+const _UFArg = Union{Nothing,AbstractString,Symbol,AbstractVector{<:AbstractString}}
+
+# `uf` normalizado: `nothing`, uma UF, várias (ordenadas, sem repetição) ou `:all`.
+function _normalize_uf(uf)
+    uf === nothing && return nothing
+    uf isa AbstractString && return validate_uf(uf)
+    if uf isa Symbol
+        uf === :all || throw(ArgumentError("`uf` inválido: :$uf. Use uma sigla, um vetor de siglas ou :all."))
+        return :all
+    end
+    isempty(uf) && throw(ArgumentError("Informe ao menos uma UF."))
+    us = sort!(unique(validate_uf.(uf)))
+    length(us) == 1 ? only(us) : us
+end
+
+# Empilha tabelas do mesmo dataset (anos ou UFs diferentes).
+_stack(dfs) = reduce(vcat, _harmonize_types!(dfs); cols = :union)
+
+# UFs com ZIP publicado para um dataset particionado por UF. O conjunto muda
+# com o ano (sem DF em eleições municipais, ZZ só em alguns datasets e anos,
+# BR só nos votos por seção de eleições gerais), então pergunta ao TSE com
+# `HEAD`. ZIPs já em cache contam sem consulta; uma resposta que não seja 404
+# também conta, para o download dizer o que houve.
+function _published_ufs(type::Symbol, year::Int)
+    candidates = [u for u in UFS if try dataset_url(type, year; uf = u); true catch; false end]
+    keep = asyncmap(candidates; ntasks = 8) do u
+        url = dataset_url(type, year; uf = u)
+        isfile(_zip_path(type, url)) || url_status(url) != 404
+    end
+    us = candidates[keep]
+    isempty(us) && throw(ArgumentError("O TSE não publicou arquivos de :$type para $year."))
+    us
+end
+
 """
     elections(year; type = :candidates, uf = nothing, kwargs...) -> DataFrame
 
@@ -15,7 +49,7 @@ Baixa (com cache), descompacta e importa um dataset eleitoral público do TSE.
   `:candidates`, `:candidates_complementary`, `:candidate_social_media`,
   `:cassation_reasons`, `:candidate_votes`, `:party_votes`, `:vote_details`,
   `:section_votes`, `:section_vote_details`, `:assets`, `:coalitions`,
-  `:vacancies`, `:voter_profile`, `:voter_profile_section` e as tabelas de
+  `:vacancies`, `:voter_profile`, `:voter_profile_section`, `:polling_places` e as tabelas de
   prestação de contas (veja [`campaign_finance`](@ref)).
 - `uf`: sigla da UF (`"PE"`, `"SP"`, ...), várias (`["PE", "PB"]`) ou `:all`.
   Opcional para datasets nacionais (sem ela, ou com `:all`, importa o Brasil
@@ -85,40 +119,6 @@ cand = candidates(2014:4:2022; uf = "PE", columns = [:nr_turno, :ds_cargo, :sg_p
 combine(groupby(cand, [:ano, :sg_partido]), nrow => :candidaturas)
 ```
 """
-const _UFArg = Union{Nothing,AbstractString,Symbol,AbstractVector{<:AbstractString}}
-
-# `uf` normalizado: `nothing`, uma UF, várias (ordenadas, sem repetição) ou `:all`.
-function _normalize_uf(uf)
-    uf === nothing && return nothing
-    uf isa AbstractString && return validate_uf(uf)
-    if uf isa Symbol
-        uf === :all || throw(ArgumentError("`uf` inválido: :$uf. Use uma sigla, um vetor de siglas ou :all."))
-        return :all
-    end
-    isempty(uf) && throw(ArgumentError("Informe ao menos uma UF."))
-    us = sort!(unique(validate_uf.(uf)))
-    length(us) == 1 ? only(us) : us
-end
-
-# Empilha tabelas do mesmo dataset (anos ou UFs diferentes).
-_stack(dfs) = reduce(vcat, _harmonize_types!(dfs); cols = :union)
-
-# UFs com ZIP publicado para um dataset particionado por UF. O conjunto muda
-# com o ano (sem DF em eleições municipais, ZZ só em alguns datasets e anos,
-# BR só nos votos por seção de eleições gerais), então pergunta ao TSE com
-# `HEAD`. ZIPs já em cache contam sem consulta; uma resposta que não seja 404
-# também conta, para o download dizer o que houve.
-function _published_ufs(type::Symbol, year::Int)
-    candidates = [u for u in UFS if try dataset_url(type, year; uf = u); true catch; false end]
-    keep = asyncmap(candidates; ntasks = 8) do u
-        url = dataset_url(type, year; uf = u)
-        isfile(_zip_path(type, url)) || url_status(url) != 404
-    end
-    us = candidates[keep]
-    isempty(us) && throw(ArgumentError("O TSE não publicou arquivos de :$type para $year."))
-    us
-end
-
 function elections(year::Integer;
                    type::Symbol = :candidates,
                    uf::_UFArg = nothing,
@@ -161,7 +161,19 @@ function elections(year::Integer;
     files = ds.by_uf ? csvs : select_csvs(csvs; uf)
     verbose && @info "Importando $(length(files)) arquivo(s)" basename.(files)
 
-    df = read_tse_csvs(files; columns, filter, normalize_names, ntasks)
+    # ZIP nacional sem divisão por UF: a UF vira um filtro de linhas, que
+    # precisa ler SG_UF mesmo que `columns` não a peça.
+    read_columns, read_filter, drop_uf = columns, filter, false
+    if uf !== nothing && !ds.by_uf && !_partitioned(files)
+        ufs = Set(uf isa AbstractVector ? uf : [uf])
+        read_filter = filter === nothing ? (row -> row.sg_uf in ufs) :
+                                           (row -> row.sg_uf in ufs && filter(row))
+        if columns !== nothing && !any(c -> lowercase(String(c)) == "sg_uf", columns)
+            read_columns, drop_uf = vcat(collect(columns), "SG_UF"), true
+        end
+    end
+    df = read_tse_csvs(files; columns = read_columns, filter = read_filter, normalize_names, ntasks)
+    drop_uf && select!(df, Not(normalize_names ? "sg_uf" : "SG_UF"))
     _set_provenance!(df, [_source_record(t, y, uf isa AbstractVector ? join(uf, ", ") : uf, url, zippath, files;
                                          columns, filtered = filter !== nothing)])
 end
@@ -262,6 +274,7 @@ for (fname, dtype) in (
         (:vacancies, :vacancies),
         (:voter_profile, :voter_profile),
         (:voter_profile_section, :voter_profile_section),
+        (:polling_places, :polling_places),
         (:candidates_complementary, :candidates_complementary),
         (:candidate_social_media, :candidate_social_media),
         (:cassation_reasons, :cassation_reasons),

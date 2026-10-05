@@ -56,6 +56,9 @@ const DATASETS = Dict{Symbol,DatasetSpec}(
     :coalitions => _ds("consulta_coligacao", "consulta_coligacao", "Coligações e legendas"),
     :vacancies => _ds("consulta_vagas", "consulta_vagas", "Número de vagas em disputa"),
     :voter_profile => _ds("perfil_eleitorado", "perfil_eleitorado", "Perfil do eleitorado"),
+    :polling_places => _ds("eleitorado_locais_votacao", "eleitorado_local_votacao",
+                       "Locais de votação: endereço, coordenadas e eleitores por seção";
+                       first_year = 2010),
     :voter_profile_section => _ds("perfil_eleitor_secao", "perfil_eleitor_secao",
                        "Perfil do eleitorado por seção eleitoral (um ZIP por UF)";
                        by_uf = true, first_year = 2008),

@@ -19,6 +19,7 @@ coalitions
 vacancies
 voter_profile
 voter_profile_section
+polling_places
 candidates_complementary
 candidate_social_media
 cassation_reasons

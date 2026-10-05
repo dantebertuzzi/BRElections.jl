@@ -93,6 +93,7 @@ df = elections(2020; type = :assets, uf = "PE")
 | `:vacancies`             | `consulta_vagas`           | Number of seats in dispute                    | 1998 |
 | `:voter_profile`         | `perfil_eleitorado`        | Electorate profile                            | 1998 |
 | `:voter_profile_section`† | `perfil_eleitor_secao`    | Electorate profile by electoral section       | 2008 |
+| `:polling_places`        | `eleitorado_locais_votacao` | Polling places: address, coordinates, voters per section | 2010 |
 
 † Partitioned by state on the TSE CDN — the `uf` argument is mandatory. For
 `:section_votes`, the presidential votes are in a separate national file,
@@ -108,6 +109,24 @@ magic numbers:
 
 ```julia
 dep = candidate_votes(2022; uf = "PE", filter = row -> row.cd_cargo == OFFICES.federal_deputy)
+```
+
+### Polling places and maps
+
+`polling_places` lists every polling place, one row per section and round, with
+address, CEP, latitude/longitude and number of voters. Coordinates come as
+`Float64` (the TSE writes them with a decimal point in some years and a comma in
+others) and are `missing` where the TSE has none (it writes `-1`). Joined with
+`section_votes`, it gives results by polling place, ready to map:
+
+```julia
+keys = [:nr_turno, :cd_municipio, :nr_zona, :nr_secao]
+locs = polling_places(2022; uf = "PE",
+                      columns = [keys; :nr_local_votacao; :nm_local_votacao; :nr_latitude; :nr_longitude])
+sec  = section_votes(2022; uf = "PE", columns = [keys; :ds_cargo; :nm_votavel; :qt_votos])
+by_place = combine(groupby(innerjoin(sec, locs; on = keys),
+                           [:nm_local_votacao, :nr_latitude, :nr_longitude, :nm_votavel]),
+                   :qt_votos => sum => :votos)
 ```
 
 ### Several states at once
