@@ -43,7 +43,7 @@ vagas = vacancies(2022)
 df = candidate_votes(2022; uf = "PE",
         columns = ["nr_turno", "cd_cargo", "nm_urna_candidato",
                    "sg_partido", "qt_votos_nominais"],
-        filter  = row -> row.nr_turno == 1 && row.cd_cargo == 6)
+        filter  = row -> row.nr_turno == 1 && row.cd_cargo == OFFICES.federal_deputy)
 
 combine(groupby(df, :sg_partido), :qt_votos_nominais => sum => :votos)
 ```

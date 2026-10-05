@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `OFFICES`: the TSE office codes (`cd_cargo`), from `president = 1` to
+  `councillor = 13`, vice and alternate offices included, for filters like
+  `row.cd_cargo == OFFICES.federal_deputy`. Checked against the 2014, 2022 and
+  2024 candidate files; the same codes are used by `live_results`, which now
+  explains that vice and alternate offices have no separate count.
+
 - `cache_info()`: what is in the local cache, one row per ZIP, with the
   datasets it serves, year, state, ZIP and extracted sizes, and when it was
   last checked against the TSE.

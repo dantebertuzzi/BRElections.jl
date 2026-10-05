@@ -721,6 +721,15 @@ end
 
         @test BRElections._office_code(:mayor) == 11 && BRElections._office_code(6) == 6
         @test_throws ArgumentError live_results(:prefeito)
+        err = try live_results(:vice_mayor; uf = "SP", municipality = "x"); catch e; e; end
+        @test err isa ArgumentError && occursin("apuração própria", err.msg)
+
+        # códigos conferidos contra consulta_cand (2014, 2022, 2024)
+        @test OFFICES.president == 1 && OFFICES.vice_president == 2
+        @test OFFICES.district_deputy == 8 && OFFICES.second_alternate == 10
+        @test OFFICES.mayor == 11 && OFFICES.vice_mayor == 12 && OFFICES.councillor == 13
+        @test sort(collect(values(OFFICES))) == 1:13
+        @test all(k -> haskey(OFFICES, k), BRElections.LIVE_OFFICES)
         @test_throws ArgumentError live_results(:governor)                            # falta uf
         @test_throws ArgumentError live_results(:mayor; uf = "SP")                    # falta município
         @test_throws ArgumentError live_results(:president; municipality = "Recife")   # falta uf

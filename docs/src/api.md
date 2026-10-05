@@ -38,6 +38,12 @@ municipalities
 live_results
 ```
 
+## Códigos
+
+```@docs
+OFFICES
+```
+
 ## Descoberta de arquivos
 
 ```@docs

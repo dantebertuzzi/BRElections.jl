@@ -51,7 +51,7 @@ export elections,
        assets, coalitions, vacancies, voter_profile, voter_profile_section,
        candidates_complementary, candidate_social_media, cassation_reasons,
        campaign_finance,
-       municipalities, live_results,
+       municipalities, live_results, OFFICES,
        available_datasets, available_files, dataset_url,
        cache_dir, set_cache_dir!, clear_cache!, cache_info,
        read_tse_csv

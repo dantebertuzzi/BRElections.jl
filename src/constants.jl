@@ -87,6 +87,33 @@ const DATASETS = Dict{Symbol,DatasetSpec}(
                        member = "despesas_pagas_orgaos_partidarios", first_year = FINANCE_FIRST_YEAR),
 )
 
+"""
+Códigos dos cargos eletivos no TSE — os mesmos da coluna `cd_cargo` dos
+arquivos e da Divulgação de Resultados ([`live_results`](@ref)). Servem
+para filtrar sem decorar números:
+
+```julia
+dep = candidate_votes(2022; uf = "PE", filter = row -> row.cd_cargo == OFFICES.federal_deputy)
+```
+
+`first_alternate` e `second_alternate` são o 1º e o 2º suplente de senador.
+"""
+const OFFICES = (
+    president        = 1,
+    vice_president   = 2,
+    governor         = 3,
+    vice_governor    = 4,
+    senator          = 5,
+    federal_deputy   = 6,
+    state_deputy     = 7,
+    district_deputy  = 8,
+    first_alternate  = 9,
+    second_alternate = 10,
+    mayor            = 11,
+    vice_mayor       = 12,
+    councillor       = 13,
+)
+
 "Unidades federativas aceitas (`BR` = arquivo nacional, `ZZ` = exterior)."
 const UFS = ["AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO", "MA",
              "MG", "MS", "MT", "PA", "PB", "PE", "PI", "PR", "RJ", "RN",

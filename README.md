@@ -99,6 +99,13 @@ Each dataset has a shortcut with the same name (`candidates(2022)`,
 `cassation_reasons(2022)`…). `available_datasets()` lists them all, with the
 first year of each.
 
+Office codes (`cd_cargo`) are available as `OFFICES`, so filters don't need
+magic numbers:
+
+```julia
+dep = candidate_votes(2022; uf = "PE", filter = row -> row.cd_cargo == OFFICES.federal_deputy)
+```
+
 ### Several years at once
 
 Pass a range or vector of years to stack them, with an `ano` column in front:

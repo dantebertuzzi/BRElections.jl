@@ -8,26 +8,20 @@
 # antes de os arquivos consolidados saírem no Portal de Dados Abertos.
 # ---------------------------------------------------------------------------
 
-"""
-Cargos aceitos por [`live_results`](@ref) e seus códigos na Divulgação de
-Resultados do TSE.
-"""
-const OFFICES = (
-    president       = 1,
-    governor        = 3,
-    senator         = 5,
-    federal_deputy  = 6,
-    state_deputy    = 7,
-    district_deputy = 8,
-    mayor           = 11,
-    councillor      = 13,
-)
+# Cargos com apuração própria: vices e suplentes são eleitos com o titular.
+const LIVE_OFFICES = (:president, :governor, :senator, :federal_deputy, :state_deputy,
+                      :district_deputy, :mayor, :councillor)
 
 const MUNICIPAL_OFFICES = (OFFICES.mayor, OFFICES.councillor)
 
 function _office_code(office::Symbol)
-    haskey(OFFICES, office) || throw(ArgumentError(
-        "Cargo desconhecido: :$office. Opções: " * join((":$k" for k in keys(OFFICES)), ", ") * "."))
+    if !(office in LIVE_OFFICES)
+        haskey(OFFICES, office) && throw(ArgumentError(
+            ":$office não tem apuração própria (é eleito junto com o titular); " *
+            "consulte o cargo do titular."))
+        throw(ArgumentError("Cargo desconhecido: :$office. Opções: " *
+                            join((":$k" for k in LIVE_OFFICES), ", ") * "."))
+    end
     OFFICES[office]
 end
 _office_code(office::Integer) = Int(office)
