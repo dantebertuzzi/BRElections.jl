@@ -1043,6 +1043,61 @@ end
         end
     end
 
+    @testset "Várias UFs e uf = :all / \"BR\" (offline)" begin
+        N = BRElections._normalize_uf
+        @test N(nothing) === nothing && N("pe") == "PE" && N(:all) === :all
+        @test N(["pe", "BA", "PE"]) == ["BA", "PE"]
+        @test N(["sp"]) == "SP"
+        @test_throws ArgumentError N(String[])
+        @test_throws ArgumentError N(:todas)
+        @test_throws ArgumentError N(["PE", "XX"])
+
+        # votos para Presidente por seção: só no ZIP BR, em eleições gerais
+        @test endswith(dataset_url(:section_votes, 2022; uf = "BR"), "votacao_secao_2022_BR.zip")
+        @test_throws ArgumentError dataset_url(:section_votes, 2024; uf = "BR")
+        @test_throws ArgumentError dataset_url(:voter_profile_section, 2022; uf = "BR")
+
+        old_cache = cache_dir()
+        set_cache_dir!(mktempdir())
+        csv(y, uf) = "ANO_ELEICAO;SG_UF;QT_VOTOS\n$y;$uf;1\n$y;$uf;2\n"
+        zp = BRElections._zip_path(:candidates, dataset_url(:candidates, 2022))
+        mkpath(dirname(zp))
+        w = ZipFile.Writer(zp)
+        for uf in ("PE", "BA", "SP")
+            write(ZipFile.addfile(w, "consulta_cand_2022_$(uf).csv"), csv(2022, uf))
+        end
+        close(w)
+        for uf in ("PE", "BA")
+            zp = BRElections._zip_path(:section_votes, dataset_url(:section_votes, 2022; uf))
+            mkpath(dirname(zp))
+            w = ZipFile.Writer(zp)
+            write(ZipFile.addfile(w, "votacao_secao_2022_$(uf).csv"), csv(2022, uf))
+            close(w)
+        end
+        try
+            # dataset nacional: só os arquivos das UFs pedidas, de um ZIP
+            df = candidates(2022; uf = ["pe", "BA"], verbose = false, check_updates = false)
+            @test sort(unique(df.sg_uf)) == ["BA", "PE"] && nrow(df) == 4
+            @test sources(df).uf == ["BA, PE"]
+            extracted = readdir(BRElections._extract_dir(BRElections._zip_path(:candidates, dataset_url(:candidates, 2022))))
+            @test !("consulta_cand_2022_SP.csv" in extracted)
+            @test nrow(candidates(2022; uf = :all, verbose = false, check_updates = false)) == 6
+
+            # dataset por UF: um ZIP por UF, empilhados
+            df = section_votes(2022; uf = ["PE", "BA"], columns = [:sg_uf], verbose = false, check_updates = false)
+            @test df.sg_uf == ["BA", "BA", "PE", "PE"] && names(df) == ["sg_uf"]
+            @test sources(df).uf == ["BA", "PE"]
+            @test count("BRASIL. Tribunal", cite(df)) == 2
+
+            # com vários anos também
+            df = section_votes([2022]; uf = ["PE", "BA"], verbose = false, check_updates = false)
+            @test nrow(df) == 4 && names(df)[1] == "ano"
+            @test_throws ArgumentError section_votes([2020, 2022]; uf = ["PE", "XX"])
+        finally
+            set_cache_dir!(old_cache)
+        end
+    end
+
     @testset "cache_info e clear_cache! por dataset" begin
         old_cache = cache_dir()
         cache = set_cache_dir!(mktempdir())
@@ -1159,6 +1214,12 @@ end
                         @test isempty(gone)
                     end
                 end
+
+                # uf = :all descobre os ZIPs publicados, que variam com o ano
+                mun = BRElections._published_ufs(:section_votes, 2024)
+                @test "PE" in mun && !("DF" in mun) && !("BR" in mun)
+                @test "BR" in BRElections._published_ufs(:section_votes, 2022)
+                @test "ZZ" in BRElections._published_ufs(:voter_profile_section, 2022)
 
                 # consulta_vagas é o menor dataset — bom para smoke test
                 df = vacancies(2022; verbose = false)

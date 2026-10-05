@@ -17,10 +17,18 @@ Baixa (com cache), descompacta e importa um dataset eleitoral público do TSE.
   `:section_votes`, `:section_vote_details`, `:assets`, `:coalitions`,
   `:vacancies`, `:voter_profile`, `:voter_profile_section` e as tabelas de
   prestação de contas (veja [`campaign_finance`](@ref)).
-- `uf`: sigla da UF (`"PE"`, `"SP"`, ...). Opcional para datasets nacionais
-  (nesse caso importa o Brasil inteiro); **obrigatória** para
-  `:section_votes` e `:voter_profile_section`, que o TSE publica em um ZIP
-  por UF.
+- `uf`: sigla da UF (`"PE"`, `"SP"`, ...), várias (`["PE", "PB"]`) ou `:all`.
+  Opcional para datasets nacionais (sem ela, ou com `:all`, importa o Brasil
+  inteiro; com várias, só os arquivos delas são extraídos do ZIP);
+  **obrigatória** para `:section_votes` e `:voter_profile_section`, que o TSE
+  publica em um ZIP por UF. Nesses, várias UFs baixam um ZIP por UF e os
+  empilham; `:all` descobre no TSE quais ZIPs existem para o ano (são
+  dezenas, de até centenas de MB cada — combine com `columns` e `filter`).
+
+  Em `:section_votes`, os votos para **Presidente** não estão nos ZIPs das
+  UFs, e sim no ZIP nacional, `uf = "BR"` (eleições gerais); `:all` o inclui.
+  Para os votos presidenciais de uma UF:
+  `section_votes(2022; uf = "BR", filter = r -> r.sg_uf == "PE")`.
 
 # Importação (repassados a [`read_tse_csv`](@ref))
 
@@ -53,6 +61,9 @@ pe = elections(2022; type = :candidate_votes, uf = "PE",
 
 # Votação por seção (particionada por UF no TSE)
 sec = elections(2022; type = :section_votes, uf = "PE")
+
+# Várias UFs
+ne = elections(2022; type = :candidates, uf = ["PE", "PB", "RN"])
 ```
 
 # Vários anos
@@ -74,9 +85,43 @@ cand = candidates(2014:4:2022; uf = "PE", columns = [:nr_turno, :ds_cargo, :sg_p
 combine(groupby(cand, [:ano, :sg_partido]), nrow => :candidaturas)
 ```
 """
+const _UFArg = Union{Nothing,AbstractString,Symbol,AbstractVector{<:AbstractString}}
+
+# `uf` normalizado: `nothing`, uma UF, várias (ordenadas, sem repetição) ou `:all`.
+function _normalize_uf(uf)
+    uf === nothing && return nothing
+    uf isa AbstractString && return validate_uf(uf)
+    if uf isa Symbol
+        uf === :all || throw(ArgumentError("`uf` inválido: :$uf. Use uma sigla, um vetor de siglas ou :all."))
+        return :all
+    end
+    isempty(uf) && throw(ArgumentError("Informe ao menos uma UF."))
+    us = sort!(unique(validate_uf.(uf)))
+    length(us) == 1 ? only(us) : us
+end
+
+# Empilha tabelas do mesmo dataset (anos ou UFs diferentes).
+_stack(dfs) = reduce(vcat, _harmonize_types!(dfs); cols = :union)
+
+# UFs com ZIP publicado para um dataset particionado por UF. O conjunto muda
+# com o ano (sem DF em eleições municipais, ZZ só em alguns datasets e anos,
+# BR só nos votos por seção de eleições gerais), então pergunta ao TSE com
+# `HEAD`. ZIPs já em cache contam sem consulta; uma resposta que não seja 404
+# também conta, para o download dizer o que houve.
+function _published_ufs(type::Symbol, year::Int)
+    candidates = [u for u in UFS if try dataset_url(type, year; uf = u); true catch; false end]
+    keep = asyncmap(candidates; ntasks = 8) do u
+        url = dataset_url(type, year; uf = u)
+        isfile(_zip_path(type, url)) || url_status(url) != 404
+    end
+    us = candidates[keep]
+    isempty(us) && throw(ArgumentError("O TSE não publicou arquivos de :$type para $year."))
+    us
+end
+
 function elections(year::Integer;
                    type::Symbol = :candidates,
-                   uf::Union{Nothing,AbstractString} = nothing,
+                   uf::_UFArg = nothing,
                    columns = nothing,
                    filter::Union{Nothing,Function} = nothing,
                    normalize_names::Bool = true,
@@ -87,6 +132,24 @@ function elections(year::Integer;
     y = validate_year(year)
     t = validate_type(type)
     ds = DATASETS[t]
+    uf = _normalize_uf(uf)
+
+    # Várias UFs de um dataset particionado: um ZIP por UF, empilhados.
+    if ds.by_uf && (uf === :all || uf isa AbstractVector)
+        ufs = uf === :all ? _published_ufs(t, y) : uf
+        foreach(u -> dataset_url(t, y; uf = u), ufs)
+        dfs = DataFrame[]
+        records = NamedTuple[]
+        for (i, u) in enumerate(ufs)
+            verbose && @info "UF $u ($i de $(length(ufs)))"
+            df = elections(y; type = t, uf = u, columns, filter, normalize_names,
+                           force, check_updates, verbose, ntasks)
+            append!(records, metadata(df, "fontes"))
+            push!(dfs, df)
+        end
+        return _set_provenance!(_stack(dfs), records)
+    end
+    uf === :all && (uf = nothing)          # dataset nacional: o Brasil inteiro
 
     url = ds.by_uf ? dataset_url(t, y; uf) : dataset_url(t, y)
     zippath = _zip_path(t, url)
@@ -99,7 +162,7 @@ function elections(year::Integer;
     verbose && @info "Importando $(length(files)) arquivo(s)" basename.(files)
 
     df = read_tse_csvs(files; columns, filter, normalize_names, ntasks)
-    _set_provenance!(df, [_source_record(t, y, uf, url, zippath, files;
+    _set_provenance!(df, [_source_record(t, y, uf isa AbstractVector ? join(uf, ", ") : uf, url, zippath, files;
                                          columns, filtered = filter !== nothing)])
 end
 
@@ -149,7 +212,7 @@ end
 
 function elections(years::AbstractVector{<:Integer};
                    type::Symbol = :candidates,
-                   uf::Union{Nothing,AbstractString} = nothing,
+                   uf::_UFArg = nothing,
                    columns = nothing,
                    normalize_names::Bool = true,
                    verbose::Bool = true,
@@ -159,10 +222,16 @@ function elections(years::AbstractVector{<:Integer};
     t = validate_type(type)
     # Valida tudo antes de baixar qualquer coisa: um ano inválido no fim da
     # lista não deve desperdiçar os downloads dos anteriores.
+    uf = _normalize_uf(uf)
     for y in ys
-        DATASETS[t].by_uf ? dataset_url(t, y; uf) : dataset_url(t, y)
+        if !DATASETS[t].by_uf
+            dataset_url(t, y)
+        elseif uf isa AbstractVector
+            foreach(u -> dataset_url(t, y; uf = u), uf)
+        elseif uf !== :all
+            dataset_url(t, y; uf)
+        end
     end
-    uf === nothing || validate_uf(uf)
 
     cols = _expand_aliases(columns)
     dfs = DataFrame[]
@@ -176,7 +245,7 @@ function elections(years::AbstractVector{<:Integer};
         push!(dfs, df)
     end
     # O `vcat` descarta metadados que diferem entre as tabelas, como as fontes.
-    _set_provenance!(reduce(vcat, _harmonize_types!(dfs); cols = :union), records)
+    _set_provenance!(_stack(dfs), records)
 end
 
 # --- Funções de conveniência --------------------------------------------

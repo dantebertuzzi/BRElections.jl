@@ -94,7 +94,9 @@ df = elections(2020; type = :assets, uf = "PE")
 | `:voter_profile`         | `perfil_eleitorado`        | Electorate profile                            | 1998 |
 | `:voter_profile_section`† | `perfil_eleitor_secao`    | Electorate profile by electoral section       | 2008 |
 
-† Partitioned by state on the TSE CDN — the `uf` argument is mandatory.
+† Partitioned by state on the TSE CDN — the `uf` argument is mandatory. For
+`:section_votes`, the presidential votes are in a separate national file,
+`uf = "BR"`.
 ‡ Not published for 2016.
 
 Each dataset has a shortcut with the same name (`candidates(2022)`,
@@ -106,6 +108,28 @@ magic numbers:
 
 ```julia
 dep = candidate_votes(2022; uf = "PE", filter = row -> row.cd_cargo == OFFICES.federal_deputy)
+```
+
+### Several states at once
+
+`uf` also takes several states, or `:all`:
+
+```julia
+ne  = candidates(2022; uf = ["PE", "PB", "RN"])   # only those files are extracted
+sec = section_votes(2022; uf = ["PE", "PB"])      # one ZIP per state, stacked
+```
+
+For the datasets partitioned by state, `:all` asks the TSE which ZIPs exist
+for that year (the set changes: there is no `DF` in municipal elections, for
+instance) and downloads all of them, which can be several GB, so combine it
+with `columns` and `filter`.
+
+**Presidential votes by section are not in the state ZIPs.** The TSE publishes
+them in a national file, `uf = "BR"` (general elections only), which `:all`
+includes:
+
+```julia
+pres_pe = section_votes(2022; uf = "BR", filter = row -> row.sg_uf == "PE")
 ```
 
 ### Several years at once

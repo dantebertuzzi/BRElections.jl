@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at import; plus `versao_brelections` and `versao_julia`. Stacking several
   years keeps one entry per year. The metadata follows `df` through `select`,
   `subset`, `transform` and so on.
+- `uf` takes several states (`uf = ["PE", "PB"]`) or `:all`. In national
+  datasets only those states' files are extracted from the ZIP; in datasets
+  partitioned by state (`section_votes`, `voter_profile_section`) one ZIP per
+  state is downloaded and stacked, and `:all` asks the TSE which ZIPs exist for
+  the year (no `DF` in municipal elections, `ZZ` only in some).
+- `section_votes(year; uf = "BR")`: presidential votes by section. The TSE does
+  not include them in the state ZIPs, only in this national file (general
+  elections), which `dataset_url` used to refuse.
 - `sources(df)` shows that provenance as a table, and `cite(df; style)` turns it
   into references for the TSE files and for the package version that imported
   them, in ABNT (NBR 6023), APA 7 or BibTeX.

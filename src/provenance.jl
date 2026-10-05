@@ -19,7 +19,7 @@ function _source_record(type::Symbol, year::Int, uf, url, zippath, files; column
     lm = get(meta, "last-modified", nothing)
     published = lm === nothing ? nothing : _parse_http_date(lm)
     (dataset = type, ano = year,
-     uf = uf === nothing ? missing : validate_uf(uf),
+     uf = uf === nothing ? missing : String(uf),
      url = String(url),
      arquivos = String[basename(f) for f in files],
      publicado_em = published === nothing ? missing : published,
