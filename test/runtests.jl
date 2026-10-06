@@ -388,11 +388,49 @@ end
         @test !BRElections._force_string("NR_TURNO")
     end
 
-    @testset "_column_selector — seleção insensível a caixa" begin
-        sel = BRElections._column_selector(["NR_Turno", :sg_uf])
-        @test sel(1, "nr_turno")
-        @test sel(2, "SG_UF")
-        @test !sel(3, "outra_coluna")
+    @testset "Campos vazios entre aspas (\"\") — mesmo resultado no CSV 0.10 e 1.x" begin
+        retype = BRElections._retype
+        @test retype(Union{Missing,String}["1", missing, "20"]) isa Vector{Union{Missing,Int}}
+        @test isequal(retype(Union{Missing,String}["1", missing, "20"]), [1, missing, 20])
+        @test retype(Union{Missing,String}["1.5", "2"]) == [1.5, 2.0]
+        @test isequal(retype(Union{Missing,String}["31/12/1980", missing]), [Date(1980, 12, 31), missing])
+        @test retype(Union{Missing,String}["abc", "1"]) == ["abc", "1"]
+        @test retype(Union{Missing,String}[missing, missing]) isa Vector{Missing}
+
+        # O TSE põe todo campo entre aspas, inclusive os vazios.
+        path = joinpath(mktempdir(), "vazios.csv")
+        write(path, """
+            "DT_NASCIMENTO";"NR_IDADE";"NM_CANDIDATO";"NR_CPF_CANDIDATO";"VR_RECEITA"
+            "31/12/1980";"44";"ANA";"01234567890";"10,50"
+            "";"";"";"";""
+            """)
+        df = read_tse_csv(path)
+        @test eltype(df.dt_nascimento) == Union{Missing,Date}
+        @test isequal(df.dt_nascimento, [Date(1980, 12, 31), missing])
+        @test isequal(df.nr_idade, [44, missing]) && nonmissingtype(eltype(df.nr_idade)) <: Integer
+        @test isequal(df.nm_candidato, ["ANA", missing])
+        @test isequal(df.nr_cpf_candidato, ["01234567890", missing])       # identificador: String
+        @test isequal(df.vr_receita, [10.5, missing])
+        # o filtro vê os mesmos tipos
+        @test nrow(read_tse_csv(path; filter = r -> !ismissing(r.dt_nascimento) && year(r.dt_nascimento) == 1980)) == 1
+    end
+
+    @testset "Cabeçalho, select e types (compatíveis com CSV 0.10 e 1.x)" begin
+        path = joinpath(mktempdir(), "h.csv")
+        write(path, "\"NR_TURNO\";\"SG_UF\";\"NR_CPF_CANDIDATO\";\"NR_TITULO_ELEITORAL\"\n1;PE;0123;0456\n")
+        header = BRElections._read_header(path)
+        @test header == [:NR_TURNO, :SG_UF, :NR_CPF_CANDIDATO, :NR_TITULO_ELEITORAL]
+        # select: insensível a caixa, na ordem do arquivo, ignorando o que não existe
+        @test BRElections._select_columns(header, ["sg_uf", :NR_Turno, "nao_existe"]) == [:NR_TURNO, :SG_UF]
+        @test isempty(BRElections._select_columns(header, ["nao_existe"]))
+        # types: só os identificadores, como String
+        @test BRElections._string_types(header) ==
+              Dict{Symbol,Type}(:NR_CPF_CANDIDATO => String, :NR_TITULO_ELEITORAL => String)
+        @test BRElections._string_types([:NR_TURNO]) === nothing
+        df = read_tse_csv(path)
+        @test df.nr_cpf_candidato == ["0123"] && df.nr_titulo_eleitoral == ["0456"]
+        @test df.nr_turno == [1]
+        @test names(read_tse_csv(path; columns = [:sg_uf, :nao_existe])) == ["sg_uf"]
     end
 
     @testset "Preservação de identificadores (NR_TITULO, NR_PROCESSO, NR_PROTOCOLO)" begin
