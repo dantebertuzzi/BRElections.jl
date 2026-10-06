@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   row.nr_turno == 1` used to fail because `nr_turno` had not been read. The
   columns are found by running the predicate on the first rows of the file, at
   no measurable cost.
+- Files too large to read whole (with `filter`) are now read in several parts
+  at once, up to `ntasks`, instead of one at a time: the 2022 national
+  `candidate_votes` (4.1 GB) filtered in 55 s now takes 20 s with 4 threads and
+  14 s with 16. Start Julia with threads (`julia -t auto`) to benefit; with a
+  single thread the time is unchanged. Results are identical.
 
 ## [0.3.0] - 2026-10-05
 

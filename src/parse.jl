@@ -165,8 +165,8 @@ sentinelas `#NULO#`/`#NE#` convertidas em `missing` e identificadores
   (`row.NR_TURNO`), inclusive colunas fora de `columns`: elas são lidas para
   o filtro e não aparecem no resultado. Se o arquivo couber com folga na
   memória livre, é lido inteiro e filtrado (mais rápido); senão, é lido em
-  *chunks* (`CSV.Chunks`), de modo que apenas as linhas aprovadas ocupam
-  memória.
+  partes, várias ao mesmo tempo (até `ntasks`), de modo que apenas as linhas
+  aprovadas ocupam memória.
 - `normalize_names = true`: converte os nomes das colunas para minúsculas.
 - `ntasks = Threads.nthreads()`: paralelismo de leitura/chunks.
 
@@ -317,13 +317,11 @@ function _apply_filter(filter, df::DataFrame)
     df[_filter_mask(filter, _any_case_columns(df), nrow(df)), :]
 end
 
-# Com `filter`, ler o arquivo inteiro e filtrar depois é bem mais rápido que
-# CSV.Chunks (medido: 0,8 s contra 2,5 s num CSV de 93 MB); os chunks só valem
-# para não estourar a memória. Então o arquivo é lido de uma vez se for pequeno
-# (o CSV.jl nem consegue particionar arquivos com poucas linhas) ou se couber
-# com folga na memória livre: a leitura aloca algumas vezes o tamanho do CSV,
-# e o resultado filtrado é mais uma cópia. (`Ref`s para os testes exercitarem
-# os dois caminhos.)
+# Com `filter`, ler o arquivo inteiro e filtrar depois é o mais rápido; ler
+# em partes só vale para não estourar a memória. Então o arquivo é lido de uma
+# vez se for pequeno ou se couber com folga na memória livre: a leitura aloca
+# algumas vezes o tamanho do CSV, e o resultado filtrado é mais uma cópia.
+# (`Ref`s para os testes exercitarem os dois caminhos.)
 const CHUNK_MIN_BYTES = Ref(64 * 2^20)
 const FILTER_MEMORY_FACTOR = Ref(6.0)
 
@@ -332,32 +330,113 @@ function _filter_in_memory(path)
     sz < CHUNK_MIN_BYTES[] || sz * FILTER_MEMORY_FACTOR[] < Sys.free_memory()
 end
 
-# Leitura com filtro: lê inteiro e filtra quando cabe na memória; senão usa
-# CSV.Chunks, de modo que só as linhas aprovadas ficam em memória.
+# Leitura com filtro: lê inteiro e filtra quando cabe na memória; senão, em
+# partes, de modo que só as linhas aprovadas ficam em memória.
 function _read_tse_csv_with_filter(path, filter, ntasks, kw)
     if _filter_in_memory(path)
         nt = filesize(path) < PARALLEL_MIN_BYTES ? 1 : ntasks
         return _apply_filter(filter, CSV.read(path, DataFrame; ntasks = nt, kw...))
     end
+    _filter_in_segments(path, filter, ntasks, kw)
+end
 
-    # Só a construção do CSV.Chunks fica no `try`: se o CSV.jl não conseguir
-    # particionar o arquivo, lê inteiro. Erros durante a iteração — inclusive
-    # um ArgumentError do predicado do usuário — são propagados.
-    chunks = try
-        CSV.Chunks(path; ntasks = clamp(ntasks, 2, 4), kw...)
-    catch e
-        e isa ArgumentError || rethrow()
-        @warn "Falha ao dividir arquivo em chunks; lendo inteiro e filtrando em memória." path exception = e
-        nothing
+# --- Arquivos grandes demais para a memória ------------------------------
+#
+# O arquivo é dividido em faixas de bytes que terminam num fim de linha, e
+# várias são lidas e filtradas ao mesmo tempo, cada uma por uma task. O
+# CSV.Chunks, usado antes, lia um pedaço de cada vez numa thread só: o
+# `candidate_votes` nacional de 2022 (4,1 GB) levava 60 s; em faixas, 19 s com
+# 4 threads e 13 s com 16. Com uma thread, o tempo é o mesmo.
+
+"Tamanho aproximado, em bytes, de cada faixa lida de um arquivo grande."
+const SEGMENT_BYTES = Ref(64 * 2^20)
+
+# Faixas de bytes (posições 1-based no arquivo, depois do cabeçalho) que
+# terminam num `\n` fora de aspas: um campo entre aspas pode ter quebra de
+# linha. Lê o arquivo em blocos, contando as aspas em bloco até perto de cada
+# corte e byte a byte só dali até o fim de linha seguinte.
+function _row_ranges(path::AbstractString, segbytes::Integer)
+    n = filesize(path)
+    cuts = Int[]
+    open(path) do io
+        readline(io)                          # cabeçalho
+        start = position(io) + 1
+        push!(cuts, start)
+        q = 0                                 # aspas vistas até aqui
+        blk = start                           # posição do primeiro byte do bloco
+        target = start + segbytes
+        seeking = false
+        buf = Vector{UInt8}(undef, 16 * 2^20)
+        while !eof(io)
+            m = readbytes!(io, buf)
+            i = 1
+            while i <= m
+                if !seeking
+                    stop = min(m, target - blk)       # último índice antes do alvo
+                    if stop >= i
+                        q += count(==(UInt8('"')), view(buf, i:stop))
+                        i = stop + 1
+                    end
+                    i > m && break
+                    seeking = true
+                end
+                b = buf[i]
+                if b == UInt8('"')
+                    q += 1
+                elseif b == UInt8('\n') && iseven(q)
+                    cut = blk + i                     # byte seguinte ao `\n`
+                    cut <= n && push!(cuts, cut)
+                    target = cut + segbytes
+                    seeking = false
+                end
+                i += 1
+            end
+            blk += m
+        end
     end
-    chunks === nothing &&
-        return _apply_filter(filter, CSV.read(path, DataFrame; ntasks = 1, kw...))
-    parts = DataFrame[]
-    for chunk in chunks
-        part = _apply_filter(filter, DataFrame(chunk))
-        nrow(part) > 0 && push!(parts, part)
+    push!(cuts, n + 1)
+    [cuts[k]:cuts[k+1]-1 for k in 1:length(cuts)-1 if cuts[k] < cuts[k+1]]
+end
+
+function _filter_in_segments(path, filter, ntasks, kw)
+    header = _read_header(path)
+    ranges = _row_ranges(path, SEGMENT_BYTES[])
+    parts = Vector{Union{Nothing,DataFrame}}(nothing, length(ranges))
+    # Quantas faixas ao mesmo tempo: o paralelismo pedido, limitado pela
+    # memória livre (cada faixa lida ocupa algumas vezes o seu tamanho).
+    fits = Sys.free_memory() / (SEGMENT_BYTES[] * FILTER_MEMORY_FACTOR[])
+    k = max(1, min(ntasks, length(ranges), isfinite(fits) ? floor(Int, fits) : 1))
+    next = Threads.Atomic{Int}(1)
+    failed = Threads.Atomic{Bool}(false)
+    function worker()
+        while !failed[]
+            i = Threads.atomic_add!(next, 1)
+            i > length(ranges) && return
+            try
+                r = ranges[i]
+                bytes = open(io -> (seek(io, first(r) - 1); read(io, length(r))), path)
+                parts[i] = _apply_filter(filter, CSV.read(bytes, DataFrame; header, ntasks = 1, kw...))
+            catch
+                failed[] = true
+                rethrow()
+            end
+        end
     end
-    isempty(parts) ? _empty_like(path, kw) : reduce(vcat, parts; cols = :union)
+    tasks = [Threads.@spawn(worker()) for _ in 1:k]
+    err = nothing
+    for t in tasks
+        try
+            wait(t)
+        catch e
+            # O erro de dentro da task (do predicado, por exemplo), não o embrulho.
+            err === nothing && (err = e isa TaskFailedException ? e.task.exception : e)
+        end
+    end
+    err === nothing || throw(err)
+    ps = DataFrame[p for p in parts if p !== nothing && nrow(p) > 0]
+    # Cada faixa infere os tipos sozinha: uma coluna pode sair número numa e
+    # texto noutra, e o `vcat` daria uma coluna `Any`.
+    isempty(ps) ? _empty_like(path, kw) : reduce(vcat, _harmonize_types!(ps); cols = :union)
 end
 
 # DataFrame vazio com o esquema do arquivo (usado quando o filtro elimina tudo).

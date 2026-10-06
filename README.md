@@ -44,7 +44,9 @@ authorisation is required.
 pkg> add BRElections
 ```
 
-Requires Julia 1.9 or later.
+Requires Julia 1.9 or later. Start Julia with threads (`julia -t auto`): large
+files are read in parallel, which for the biggest TSE files cuts the time by
+a factor of 3 or more.
 
 ## Quick start
 
