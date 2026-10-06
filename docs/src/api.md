@@ -19,6 +19,7 @@ coalitions
 vacancies
 voter_profile
 voter_profile_section
+polling_places
 candidates_complementary
 candidate_social_media
 cassation_reasons
@@ -50,6 +51,13 @@ OFFICES
 available_datasets
 available_files
 dataset_url
+```
+
+## Proveniência e citação
+
+```@docs
+sources
+cite
 ```
 
 ## Cache

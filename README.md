@@ -34,6 +34,8 @@ authorisation is required.
   preserved as `String` (leading zeros intact);
 - Column name normalisation (lowercase, optional);
 - **Column** and **row** filters applied during import to minimise memory usage;
+- Provenance on every table (`sources`) and ready references for the data and
+  the package (`cite`, in ABNT, APA or BibTeX);
 - Automated test suite (offline by default; optional network tests).
 
 ## Installation
@@ -91,8 +93,11 @@ df = elections(2020; type = :assets, uf = "PE")
 | `:vacancies`             | `consulta_vagas`           | Number of seats in dispute                    | 1998 |
 | `:voter_profile`         | `perfil_eleitorado`        | Electorate profile                            | 1998 |
 | `:voter_profile_section`† | `perfil_eleitor_secao`    | Electorate profile by electoral section       | 2008 |
+| `:polling_places`        | `eleitorado_locais_votacao` | Polling places: address, coordinates, voters per section | 2010 |
 
-† Partitioned by state on the TSE CDN — the `uf` argument is mandatory.
+† Partitioned by state on the TSE CDN — the `uf` argument is mandatory. For
+`:section_votes`, the presidential votes are in a separate national file,
+`uf = "BR"`.
 ‡ Not published for 2016.
 
 Each dataset has a shortcut with the same name (`candidates(2022)`,
@@ -104,6 +109,46 @@ magic numbers:
 
 ```julia
 dep = candidate_votes(2022; uf = "PE", filter = row -> row.cd_cargo == OFFICES.federal_deputy)
+```
+
+### Polling places and maps
+
+`polling_places` lists every polling place, one row per section and round, with
+address, CEP, latitude/longitude and number of voters. Coordinates come as
+`Float64` (the TSE writes them with a decimal point in some years and a comma in
+others) and are `missing` where the TSE has none (it writes `-1`). Joined with
+`section_votes`, it gives results by polling place, ready to map:
+
+```julia
+keys = [:nr_turno, :cd_municipio, :nr_zona, :nr_secao]
+locs = polling_places(2022; uf = "PE",
+                      columns = [keys; :nr_local_votacao; :nm_local_votacao; :nr_latitude; :nr_longitude])
+sec  = section_votes(2022; uf = "PE", columns = [keys; :ds_cargo; :nm_votavel; :qt_votos])
+by_place = combine(groupby(innerjoin(sec, locs; on = keys),
+                           [:nm_local_votacao, :nr_latitude, :nr_longitude, :nm_votavel]),
+                   :qt_votos => sum => :votos)
+```
+
+### Several states at once
+
+`uf` also takes several states, or `:all`:
+
+```julia
+ne  = candidates(2022; uf = ["PE", "PB", "RN"])   # only those files are extracted
+sec = section_votes(2022; uf = ["PE", "PB"])      # one ZIP per state, stacked
+```
+
+For the datasets partitioned by state, `:all` asks the TSE which ZIPs exist
+for that year (the set changes: there is no `DF` in municipal elections, for
+instance) and downloads all of them, which can be several GB, so combine it
+with `columns` and `filter`.
+
+**Presidential votes by section are not in the state ZIPs.** The TSE publishes
+them in a national file, `uf = "BR"` (general elections only), which `:all`
+includes:
+
+```julia
+pres_pe = section_votes(2022; uf = "BR", filter = row -> row.sg_uf == "PE")
 ```
 
 ### Several years at once
@@ -280,6 +325,17 @@ different numbers:
 > BRASIL. Tribunal Superior Eleitoral. *Repositório de dados eleitorais*:
 > dados abertos. Brasília: TSE, 2026. Available at:
 > https://cdn.tse.jus.br/estatistica/sead/odsele/. Accessed: 31 Aug. 2026.
+
+You don't need to assemble this by hand: every table returned by the package
+carries its provenance (`sources`), and `cite` writes the references — one per
+TSE file, with the published version and access date, plus one for the package
+version that imported it:
+
+```julia
+cand = candidates(2022; uf = "PE")
+sources(cand)                      # URL, TSE version (Last-Modified/ETag), download date, filters
+print(cite(cand))                  # ABNT; also style = :apa or :bibtex
+```
 
 State the **year and the dataset** you used (`candidates`, `candidate_votes`,
 `section_votes`, …), since each is a separate published file with its own

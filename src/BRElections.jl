@@ -12,7 +12,7 @@ Ponto de entrada principal: [`elections`](@ref). Funções de conveniência:
 [`candidates`](@ref), [`candidate_votes`](@ref), [`party_votes`](@ref),
 [`vote_details`](@ref), [`section_votes`](@ref), [`section_vote_details`](@ref),
 [`assets`](@ref), [`coalitions`](@ref), [`vacancies`](@ref),
-[`voter_profile`](@ref), [`voter_profile_section`](@ref),
+[`voter_profile`](@ref), [`voter_profile_section`](@ref), [`polling_places`](@ref),
 [`candidates_complementary`](@ref), [`candidate_social_media`](@ref),
 [`cassation_reasons`](@ref). Prestação de contas: [`campaign_finance`](@ref).
 Para cruzar com dados do IBGE:
@@ -48,13 +48,14 @@ using ZipFile
 export elections,
        candidates, candidate_votes, party_votes, vote_details,
        section_votes, section_vote_details,
-       assets, coalitions, vacancies, voter_profile, voter_profile_section,
+       assets, coalitions, vacancies, voter_profile, voter_profile_section, polling_places,
        candidates_complementary, candidate_social_media, cassation_reasons,
        campaign_finance,
        municipalities, live_results, OFFICES,
        available_datasets, available_files, dataset_url,
        cache_dir, set_cache_dir!, clear_cache!, cache_info,
-       read_tse_csv
+       read_tse_csv,
+       sources, cite
 
 include("constants.jl")
 include("cache.jl")
@@ -62,6 +63,7 @@ include("download.jl")
 include("extract.jl")
 include("parse.jl")
 include("api.jl")
+include("provenance.jl")
 include("municipalities.jl")
 include("live.jl")
 

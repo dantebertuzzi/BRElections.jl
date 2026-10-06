@@ -135,12 +135,21 @@ _matches_member(name::AbstractString, member::AbstractString) =
 # (pré-extração, para não descompactar/transcodificar dados que não serão
 # usados — alguns ZIPs nacionais do TSE têm um "_BRASIL.csv" que é a
 # concatenação de todos os estados, várias vezes maior que qualquer UF isolada).
+# Os arquivos do ZIP são divididos por UF (`..._PE.csv`, `..._BRASIL.csv`)?
+_partitioned(names) = any(n -> occursin(r"_([A-Z]{2}|BRASIL)\.(csv|txt)$"i, basename(n)), names)
+
 function _select_uf_names(names::AbstractVector{<:AbstractString};
-                          uf::Union{Nothing,AbstractString} = nothing)
+                          uf::Union{Nothing,AbstractString,AbstractVector{<:AbstractString}} = nothing)
+    # ZIP com um CSV só, sem divisão por UF (locais de votação até 2024): lê
+    # tudo, e `elections` filtra as linhas pela coluna SG_UF.
+    uf === nothing || _partitioned(names) || return collect(names)
+    if uf isa AbstractVector
+        return reduce(vcat, (_select_uf_names(names; uf = u) for u in uf); init = String[])
+    end
     if uf !== nothing
         u = validate_uf(uf)
         suffix = uppercase("_$(u).csv")
-        sel = [n for n in names if endswith(uppercase(basename(n)), suffix)]
+        sel = [String(n) for n in names if endswith(uppercase(basename(n)), suffix)]
         isempty(sel) && throw(ArgumentError(
             "Nenhum arquivo para a UF $u neste dataset. Arquivos disponíveis: " *
             join(basename.(names), ", ")))
@@ -162,7 +171,8 @@ versão e [`download_file`](@ref) a baixou).
 
 Só as entradas do ZIP realmente necessárias são descompactadas: se `uf` for
 informada, apenas os arquivos daquela UF; senão, o `_BRASIL.csv` (se
-existir) em vez de também extrair cada arquivo por UF ao lado dele. Em
+existir) em vez de também extrair cada arquivo por UF ao lado dele. `uf` também
+pode ser um vetor de UFs. Em
 alguns datasets nacionais do TSE o `_BRASIL.csv` é a concatenação de todos
 os estados — extrair também os arquivos por UF seria puro desperdício de
 tempo e memória, já que `_BRASIL.csv` sozinho já contém tudo. Um ZIP sem
@@ -174,7 +184,7 @@ Retorna os caminhos dos CSVs extraídos, ordenados.
 """
 function extract_csvs(zippath::AbstractString;
                       dest::AbstractString = _extract_dir(zippath),
-                      uf::Union{Nothing,AbstractString} = nothing,
+                      uf::Union{Nothing,AbstractString,AbstractVector{<:AbstractString}} = nothing,
                       member::AbstractString = "",
                       force::Bool = false)
     isfile(zippath) || throw(ArgumentError("ZIP não encontrado: $zippath"))
@@ -204,5 +214,5 @@ function extract_csvs(zippath::AbstractString;
 end
 
 # Seleciona, dentre os CSVs já extraídos de um ZIP nacional, quais ler.
-select_csvs(paths::Vector{String}; uf::Union{Nothing,AbstractString} = nothing) =
+select_csvs(paths::Vector{String}; uf::Union{Nothing,AbstractString,AbstractVector{<:AbstractString}} = nothing) =
     _select_uf_names(paths; uf)

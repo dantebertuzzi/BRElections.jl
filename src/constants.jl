@@ -56,6 +56,9 @@ const DATASETS = Dict{Symbol,DatasetSpec}(
     :coalitions => _ds("consulta_coligacao", "consulta_coligacao", "Coligações e legendas"),
     :vacancies => _ds("consulta_vagas", "consulta_vagas", "Número de vagas em disputa"),
     :voter_profile => _ds("perfil_eleitorado", "perfil_eleitorado", "Perfil do eleitorado"),
+    :polling_places => _ds("eleitorado_locais_votacao", "eleitorado_local_votacao",
+                       "Locais de votação: endereço, coordenadas e eleitores por seção";
+                       first_year = 2010),
     :voter_profile_section => _ds("perfil_eleitor_secao", "perfil_eleitor_secao",
                        "Perfil do eleitorado por seção eleitoral (um ZIP por UF)";
                        by_uf = true, first_year = 2008),
@@ -119,6 +122,12 @@ const UFS = ["AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO", "MA",
              "MG", "MS", "MT", "PA", "PB", "PE", "PI", "PR", "RJ", "RN",
              "RO", "RR", "RS", "SC", "SE", "SP", "TO", "ZZ", "BR"]
 
+"""
+Datasets particionados por UF que também têm um ZIP `_BR`, com os votos para
+Presidente, cargo que não aparece nos ZIPs das UFs (só em eleições gerais).
+"""
+const _BR_ZIP = (:section_votes,)
+
 "Último ano eleitoral com arquivos consolidados conhecidos pelo pacote."
 const LAST_KNOWN_YEAR = 2024
 
@@ -126,16 +135,20 @@ const LAST_KNOWN_YEAR = 2024
 """
     validate_year(year) -> Int
 
-Valida um ano eleitoral (par, ≥ $(FIRST_YEAR)). Emite `@warn` para anos
-posteriores a $(LAST_KNOWN_YEAR), cujos arquivos podem ainda não existir.
+Valida um ano eleitoral (par, ≥ $(FIRST_YEAR)). Para anos posteriores a
+$(LAST_KNOWN_YEAR), avisa (uma vez por sessão) que os arquivos podem estar
+incompletos, ser preliminares ou ainda não existir.
 """
 function validate_year(year::Integer)
     iseven(year) || throw(ArgumentError(
         "Ano eleitoral inválido: $year. Eleições brasileiras ocorrem em anos pares."))
     year >= FIRST_YEAR || throw(ArgumentError(
         "Ano $year não suportado. O pacote cobre eleições a partir de $(FIRST_YEAR)."))
-    year > LAST_KNOWN_YEAR && @warn "Ano $year é posterior à última eleição consolidada " *
-        "conhecida ($(LAST_KNOWN_YEAR)); os arquivos podem ainda não estar publicados."
+    # Uma vez por sessão: `:all` e vários anos validam o mesmo ano dezenas de vezes.
+    year > LAST_KNOWN_YEAR && @warn "Os dados de $year ainda não estão consolidados (a última eleição " *
+        "consolidada conhecida pelo pacote é $(LAST_KNOWN_YEAR)): alguns arquivos podem não estar " *
+        "publicados, e os publicados são regerados pelo TSE durante a apuração e o julgamento das " *
+        "candidaturas. Cite a data do download (veja `sources`)." maxlog = 1
     Int(year)
 end
 
@@ -168,7 +181,8 @@ end
 
 Constrói a URL pública do ZIP no CDN do TSE para o dataset `type` e o ano
 `year`. Para datasets particionados por UF no CDN (`:section_votes`,
-`:voter_profile_section`) o argumento `uf` é obrigatório. Anos anteriores ao
+`:voter_profile_section`) o argumento `uf` é obrigatório; em `:section_votes`,
+`uf = "BR"` é o arquivo com os votos para Presidente (eleições gerais). Anos anteriores ao
 primeiro do dataset (coluna `first_year` de [`available_datasets`](@ref))
 são recusados.
 
@@ -191,8 +205,13 @@ function dataset_url(type::Symbol, year::Integer; uf::Union{Nothing,AbstractStri
         uf === nothing && throw(ArgumentError(
             "O dataset :$type é particionado por UF; informe `uf`, por exemplo uf = \"PE\"."))
         u = validate_uf(uf)
-        u == "BR" && throw(ArgumentError(
-            "O dataset :$type não possui arquivo nacional; informe uma UF específica."))
+        if u == "BR"
+            type in _BR_ZIP || throw(ArgumentError(
+                "O dataset :$type não possui arquivo nacional; informe uma UF específica."))
+            iseven(y ÷ 2) && throw(ArgumentError(
+                "O arquivo nacional (uf = \"BR\") de :$type traz os votos para Presidente e só " *
+                "existe em eleições gerais; $y foi uma eleição municipal."))
+        end
         return "$(TSE_BASE)/$(ds.dir)/$(ds.prefix)_$(y)_$(u).zip"
     end
     "$(TSE_BASE)/$(ds.dir)/$(ds.prefix)_$(y).zip"

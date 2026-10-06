@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Provenance metadata on every `DataFrame` returned by `elections` and its
+  shortcuts: `metadata(df, "fontes")` records, per TSE ZIP, the URL, the CSVs
+  read, the published version (`Last-Modified`, `ETag`), when it was
+  downloaded and last checked against the TSE, and the `columns`/`filter` used
+  at import; plus `versao_brelections` and `versao_julia`. Stacking several
+  years keeps one entry per year. The metadata follows `df` through `select`,
+  `subset`, `transform` and so on.
+- `uf` takes several states (`uf = ["PE", "PB"]`) or `:all`. In national
+  datasets only those states' files are extracted from the ZIP; in datasets
+  partitioned by state (`section_votes`, `voter_profile_section`) one ZIP per
+  state is downloaded and stacked, and `:all` asks the TSE which ZIPs exist for
+  the year (no `DF` in municipal elections, `ZZ` only in some).
+- `section_votes(year; uf = "BR")`: presidential votes by section. The TSE does
+  not include them in the state ZIPs, only in this national file (general
+  elections), which `dataset_url` used to refuse.
+- `polling_places` (`:polling_places`): polling places from 2010 on, one row per
+  section and round, with address, CEP, latitude/longitude and voters. The TSE
+  ships it as a single national CSV up to 2024 and per state from 2026; with a
+  single CSV, `uf` filters rows by `SG_UF` while reading. Coordinates are
+  `Float64` whether written with a decimal point or comma, and `missing` where
+  the TSE writes `-1`.
+- `sources(df)` shows that provenance as a table, and `cite(df; style)` turns it
+  into references for the TSE files and for the package version that imported
+  them, in ABNT (NBR 6023), APA 7 or BibTeX.
+
 - Support for CSV.jl 1.x (compat `"0.10, 1"`), which reads TSE files about
   5× faster (93 MB file: 0.73 s → 0.14 s; with `filter`, 0.83 s → 0.27 s). On
   Julia 1.9, where CSV.jl 1.x is not available, 0.10 is used as before. Results
@@ -19,6 +44,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty field (`""`, which the TSE uses for every empty field) as present empty
   text, so those are turned into `missing` and the affected columns get the
   type CSV.jl 0.10 inferred (integer, float or `dd/mm/yyyy` date).
+
+### Changed
+
+- `filter` is about twice as fast end to end on large files (`section_votes`
+  for PE, 2.7 million rows: 2.6 s → 1.4 s): the predicate itself runs ~13×
+  faster, since `row.nr_turno` is now resolved to its column at compile time
+  instead of on every row. A predicate that returns `missing` (a comparison
+  on a column with missing values) now raises an error explaining how to
+  handle it.
+- The warning for years after the last consolidated election (2026, today) now
+  says what is actually the case: files may be missing, and the published ones
+  are regenerated during the count. It is shown once per session instead of
+  on every call (`uf = :all` used to print it dozens of times).
+- `NR_CEP*` and `NR_TELEFONE*` columns are kept as `String`, like the other
+  identifiers: CEPs starting with zero (all of São Paulo state, for instance)
+  lost it when read as integers.
 
 ## [0.2.0] - 2026-10-05
 
