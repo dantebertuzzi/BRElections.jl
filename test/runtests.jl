@@ -575,6 +575,22 @@ end
         @test nrow(df) == 1 && "NR_TURNO" in names(df)
         # coluna inexistente continua dando erro
         @test_throws ArgumentError read_tse_csv(csv; filter = row -> row.nao_existe == 1)
+        @test_throws ArgumentError read_tse_csv(csv; columns = [:sg_uf], filter = row -> row.nao_existe == 1)
+
+        # colunas fora de `columns`: lidas para o filtro, fora do resultado
+        df = read_tse_csv(csv; columns = [:nm_urna_candidato], filter = row -> row.nr_turno == 1 && row.SG_UF == "PE")
+        @test names(df) == ["nm_urna_candidato"] && nrow(df) == 2
+        df = read_tse_csv(csv; columns = [:NR_TURNO], normalize_names = false, filter = row -> row.sg_uf == "BA")
+        @test names(df) == ["NR_TURNO"] && df.NR_TURNO == [1]
+        # coluna que só a leitura completa revela (a amostra não chega a ela)
+        BRElections.FILTER_SAMPLE_ROWS[] = 1
+        try
+            df = read_tse_csv(csv; columns = [:nm_urna_candidato],
+                              filter = row -> row.sg_uf == "BA" && row.qt_votos_nominais > 10)
+            @test names(df) == ["nm_urna_candidato"] && nrow(df) == 1
+        finally
+            BRElections.FILTER_SAMPLE_ROWS[] = 1000
+        end
         # erro do próprio predicado não é engolido
         @test_throws DomainError read_tse_csv(csv; filter = row -> throw(DomainError(1)))
         # predicado que devolve `missing`: erro que explica o que fazer
@@ -587,8 +603,58 @@ end
         @test nrow(read_tse_csv(csv; filter = row -> :NR_TURNO in propertynames(row))) == 4
     end
 
-    @testset "filter — caminho em chunks" begin
-        # Força o caminho de CSV.Chunks com um arquivo grande o suficiente.
+    @testset "filter — arquivo grande, em faixas paralelas" begin
+        dir = mktempdir()
+        csv = joinpath(dir, "faixas.csv")
+        # Campo entre aspas com quebra de linha e aspas escapadas, e uma coluna
+        # que é número no começo do arquivo e texto no fim.
+        open(csv, "w") do io
+            println(io, "NR_TURNO;SG_UF;DS_OBS;CD_X")
+            for i in 1:3_000
+                obs = i % 7 == 0 ? "\"linha 1\nlinha 2 \"\"aspas\"\";\"" : "\"obs $i\""
+                println(io, isodd(i) ? 1 : 2, ";\"", i % 3 == 0 ? "PE" : "BA", "\";", obs, ';', i > 2_900 ? "A$i" : string(i))
+            end
+        end
+        ranges = BRElections._row_ranges(csv, 4_000)
+        @test length(ranges) > 10
+        @test first(first(ranges)) == length("NR_TURNO;SG_UF;DS_OBS;CD_X\n") + 1
+        @test last(last(ranges)) == filesize(csv)
+        @test all(last(ranges[k]) + 1 == first(ranges[k+1]) for k in 1:length(ranges)-1)
+
+        old = (BRElections.CHUNK_MIN_BYTES[], BRElections.FILTER_MEMORY_FACTOR[], BRElections.SEGMENT_BYTES[])
+        BRElections.CHUNK_MIN_BYTES[] = 0
+        BRElections.FILTER_MEMORY_FACTOR[] = 1e-6        # "não cabe" inteiro, mas várias faixas cabem
+        BRElections.SEGMENT_BYTES[] = 4_000
+        try
+            BRElections.FILTER_MEMORY_FACTOR[] = Inf
+            @test !BRElections._filter_in_memory(csv)
+            BRElections.FILTER_MEMORY_FACTOR[] = 1e-6
+            BRElections.CHUNK_MIN_BYTES[] = typemax(Int)    # fora: compara com a leitura inteira
+            ref = read_tse_csv(csv; filter = row -> row.sg_uf == "PE")
+            BRElections.CHUNK_MIN_BYTES[] = 0
+            BRElections.FILTER_MEMORY_FACTOR[] = Inf
+            for nt in (1, 4)
+                df = read_tse_csv(csv; filter = row -> row.sg_uf == "PE", ntasks = nt)
+                @test isequal(df, ref)                                  # mesma ordem e valores
+                @test eltype(df.cd_x) == String                         # número + texto → texto
+                @test count(contains("\n"), df.ds_obs) == count(i -> i % 21 == 0, 1:3_000)
+            end
+            @test nrow(read_tse_csv(csv; filter = row -> false, ntasks = 4)) == 0
+            # erros de dentro das tasks chegam sem o embrulho
+            @test_throws DomainError read_tse_csv(csv; ntasks = 4, filter = row -> throw(DomainError(1)))
+            @test_throws ArgumentError read_tse_csv(csv; ntasks = 4, filter = row -> row.nao_existe == 1)
+            # coluna fora de `columns` revelada só depois da amostra
+            BRElections.FILTER_SAMPLE_ROWS[] = 1
+            df = read_tse_csv(csv; columns = [:nr_turno], ntasks = 4,
+                              filter = row -> row.sg_uf == "PE" && row.ds_obs == "obs 2997")
+            @test names(df) == ["nr_turno"] && df.nr_turno == [1]
+        finally
+            BRElections.CHUNK_MIN_BYTES[], BRElections.FILTER_MEMORY_FACTOR[], BRElections.SEGMENT_BYTES[] = old
+            BRElections.FILTER_SAMPLE_ROWS[] = 1000
+        end
+    end
+
+    @testset "filter — caminho em partes (arquivo maior que a memória)" begin
         dir = mktempdir()
         csv = joinpath(dir, "grande.csv")
         open(csv, "w") do io
