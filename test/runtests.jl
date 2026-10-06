@@ -575,6 +575,22 @@ end
         @test nrow(df) == 1 && "NR_TURNO" in names(df)
         # coluna inexistente continua dando erro
         @test_throws ArgumentError read_tse_csv(csv; filter = row -> row.nao_existe == 1)
+        @test_throws ArgumentError read_tse_csv(csv; columns = [:sg_uf], filter = row -> row.nao_existe == 1)
+
+        # colunas fora de `columns`: lidas para o filtro, fora do resultado
+        df = read_tse_csv(csv; columns = [:nm_urna_candidato], filter = row -> row.nr_turno == 1 && row.SG_UF == "PE")
+        @test names(df) == ["nm_urna_candidato"] && nrow(df) == 2
+        df = read_tse_csv(csv; columns = [:NR_TURNO], normalize_names = false, filter = row -> row.sg_uf == "BA")
+        @test names(df) == ["NR_TURNO"] && df.NR_TURNO == [1]
+        # coluna que só a leitura completa revela (a amostra não chega a ela)
+        BRElections.FILTER_SAMPLE_ROWS[] = 1
+        try
+            df = read_tse_csv(csv; columns = [:nm_urna_candidato],
+                              filter = row -> row.sg_uf == "BA" && row.qt_votos_nominais > 10)
+            @test names(df) == ["nm_urna_candidato"] && nrow(df) == 1
+        finally
+            BRElections.FILTER_SAMPLE_ROWS[] = 1000
+        end
         # erro do próprio predicado não é engolido
         @test_throws DomainError read_tse_csv(csv; filter = row -> throw(DomainError(1)))
         # predicado que devolve `missing`: erro que explica o que fazer

@@ -161,19 +161,15 @@ function elections(year::Integer;
     files = ds.by_uf ? csvs : select_csvs(csvs; uf)
     verbose && @info "Importando $(length(files)) arquivo(s)" basename.(files)
 
-    # ZIP nacional sem divisão por UF: a UF vira um filtro de linhas, que
-    # precisa ler SG_UF mesmo que `columns` não a peça.
-    read_columns, read_filter, drop_uf = columns, filter, false
+    # ZIP nacional sem divisão por UF: a UF vira um filtro de linhas (que lê
+    # SG_UF mesmo que `columns` não a peça).
+    read_filter = filter
     if uf !== nothing && !ds.by_uf && !_partitioned(files)
         ufs = Set(uf isa AbstractVector ? uf : [uf])
         read_filter = filter === nothing ? (row -> row.sg_uf in ufs) :
                                            (row -> row.sg_uf in ufs && filter(row))
-        if columns !== nothing && !any(c -> lowercase(String(c)) == "sg_uf", columns)
-            read_columns, drop_uf = vcat(collect(columns), "SG_UF"), true
-        end
     end
-    df = read_tse_csvs(files; columns = read_columns, filter = read_filter, normalize_names, ntasks)
-    drop_uf && select!(df, Not(normalize_names ? "sg_uf" : "SG_UF"))
+    df = read_tse_csvs(files; columns, filter = read_filter, normalize_names, ntasks)
     _set_provenance!(df, [_source_record(t, y, uf isa AbstractVector ? join(uf, ", ") : uf, url, zippath, files;
                                          columns, filtered = filter !== nothing)])
 end

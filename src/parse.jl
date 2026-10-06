@@ -162,9 +162,11 @@ sentinelas `#NULO#`/`#NE#` convertidas em `missing` e identificadores
 - `filter = nothing`: predicado `row -> Bool` aplicado durante a importação.
   As colunas podem ser acessadas tanto pelo nome normalizado (`row.nr_turno`,
   o mesmo do `DataFrame` devolvido) quanto pelo original do TSE
-  (`row.NR_TURNO`). Se o arquivo couber com folga na memória livre, é lido
-  inteiro e filtrado (mais rápido); senão, é lido em *chunks* (`CSV.Chunks`),
-  de modo que apenas as linhas aprovadas ocupam memória.
+  (`row.NR_TURNO`), inclusive colunas fora de `columns`: elas são lidas para
+  o filtro e não aparecem no resultado. Se o arquivo couber com folga na
+  memória livre, é lido inteiro e filtrado (mais rápido); senão, é lido em
+  *chunks* (`CSV.Chunks`), de modo que apenas as linhas aprovadas ocupam
+  memória.
 - `normalize_names = true`: converte os nomes das colunas para minúsculas.
 - `ntasks = Threads.nthreads()`: paralelismo de leitura/chunks.
 
@@ -182,18 +184,59 @@ function read_tse_csv(path::AbstractString;
                       normalize_names::Bool = true,
                       ntasks::Int = max(Threads.nthreads(), 1))
     isfile(path) || throw(ArgumentError("Arquivo não encontrado: $path"))
-    kw = _common_csv_kwargs(path; columns)
-
-    df = if filter === nothing
-        # Em arquivos pequenos, paralelizar não ajuda e o CSV.jl emite aviso.
-        _postprocess!(
-            CSV.read(path, DataFrame; ntasks = filesize(path) < PARALLEL_MIN_BYTES ? 1 : ntasks, kw...))
-    else
-        _read_tse_csv_with_filter(path, filter, ntasks, kw)
+    header = _read_header(path)
+    # Colunas que o predicado usa sem que `columns` as peça: lidas também, e
+    # tiradas do resultado no fim.
+    extra = columns === nothing || filter === nothing ? Symbol[] :
+            _filter_columns(path, header, columns, filter)
+    df = nothing
+    while df === nothing
+        cols = isempty(extra) ? columns : vcat(collect(columns), extra)
+        df = try
+            _read_tse_csv(path, cols, filter, ntasks)
+        catch e
+            e isa _ColumnNotRead || rethrow()
+            # Uma linha além da amostra pediu outra coluna: lê de novo com ela.
+            name = _header_name(header, e.name)
+            (columns === nothing || name === nothing || name in extra) && throw(_no_such_column(e.name, header))
+            push!(extra, name)
+            nothing
+        end
     end
-
+    isempty(extra) || select!(df, Not(String.(extra)))
     normalize_names && rename!(lowercase, df)
     df
+end
+
+function _read_tse_csv(path, columns, filter, ntasks)
+    kw = _common_csv_kwargs(path; columns)
+    filter === nothing || return _read_tse_csv_with_filter(path, filter, ntasks, kw)
+    # Em arquivos pequenos, paralelizar não ajuda e o CSV.jl emite aviso.
+    _postprocess!(CSV.read(path, DataFrame; ntasks = filesize(path) < PARALLEL_MIN_BYTES ? 1 : ntasks, kw...))
+end
+
+# Descobre, rodando o predicado numa amostra do início do arquivo, as colunas
+# que ele usa além das de `columns`. Um predicado pode ler colunas diferentes
+# em linhas diferentes (`a == 1 && b > 2` só lê `b` quando `a == 1`); o que a
+# amostra não revelar, `read_tse_csv` acrescenta ao encontrar.
+const FILTER_SAMPLE_ROWS = Ref(1000)   # `Ref` para os testes
+
+function _filter_columns(path, header, columns, filter)
+    requested = Set(lowercase(String(c)) for c in columns)
+    extra = Symbol[]
+    while true
+        kw = _common_csv_kwargs(path; columns = vcat(collect(columns), extra))
+        sample = _postprocess!(CSV.read(path, DataFrame; limit = FILTER_SAMPLE_ROWS[], ntasks = 1, kw...))
+        try
+            _filter_mask(filter, _any_case_columns(sample), nrow(sample))
+            return extra
+        catch e
+            e isa _ColumnNotRead || return extra     # outros erros aparecem na leitura de verdade
+            name = _header_name(header, e.name)
+            (name === nothing || name in extra || lowercase(String(name)) in requested) && return extra
+            push!(extra, name)
+        end
+    end
 end
 
 # Linha vista pelo predicado de `filter`: aceita o nome da coluna em qualquer
@@ -224,9 +267,23 @@ end
     for alt in (s, Symbol(lowercase(String(s))), Symbol(uppercase(String(s))))
         hasfield(typeof(cols), alt) && return getfield(cols, alt)
     end
-    throw(ArgumentError("A coluna :$s não existe nesta tabela (ou não foi pedida em `columns`). " *
-                        "Colunas: " * join(unique(lowercase.(String.(keys(cols)))), ", ")))
+    throw(_ColumnNotRead(s))
 end
+
+# O predicado pediu uma coluna que não foi lida. `read_tse_csv` a acrescenta e
+# lê de novo, se ela existir no arquivo; senão, vira um ArgumentError.
+struct _ColumnNotRead <: Exception
+    name::Symbol
+end
+
+# Nome da coluna no cabeçalho, sem distinguir maiúsculas (`nothing` se não há).
+function _header_name(header, name)
+    i = findfirst(h -> lowercase(String(h)) == lowercase(String(name)), header)
+    i === nothing ? nothing : header[i]
+end
+
+_no_such_column(name, header) = ArgumentError(
+    "A coluna :$name não existe neste arquivo. Colunas: " * join(lowercase.(String.(header)), ", "))
 
 @inline function _column(r::_AnyCaseRow{C}, name::Symbol) where {C}
     cols = getfield(r, :cols)

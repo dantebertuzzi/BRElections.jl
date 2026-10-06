@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `filter` can use columns not listed in `columns`: they are read for the
+  filter and left out of the result. `columns = [:nm_votavel], filter = row ->
+  row.nr_turno == 1` used to fail because `nr_turno` had not been read. The
+  columns are found by running the predicate on the first rows of the file, at
+  no measurable cost.
+
 ## [0.3.0] - 2026-10-05
 
 Provenance and citations, several states per call, presidential votes by
