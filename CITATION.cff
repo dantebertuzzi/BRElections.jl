@@ -7,8 +7,10 @@ type: software
 title: "BRElections.jl: a Julia interface to Brazilian electoral open data (TSE)"
 abstract: >-
   Julia package for Brazil's public electoral data, published by the Tribunal
-  Superior Eleitoral (TSE): candidates, votes, assets, campaign finance and
-  voter profiles from the open-data repository, several years per call;
+  Superior Eleitoral (TSE): candidates, votes, assets, campaign finance,
+  voter profiles and polling places (with coordinates) from the open-data
+  repository, several years and states per call, each table carrying its
+  provenance and ready ABNT, APA or BibTeX references for the data;
   live vote counting from the TSE's results system; and a crosswalk between
   TSE and IBGE municipality codes. It handles downloads with retries, a
   portable local cache revalidated against the TSE, streaming ZIP extraction
@@ -21,7 +23,7 @@ authors:
   - family-names: Bertuzzi
     given-names: Dante
     email: dantesbertuzzi@gmail.com
-version: 0.2.0
+version: 0.3.0
 date-released: "2026-10-05"
 license: MIT
 doi: 10.5281/zenodo.22182707
