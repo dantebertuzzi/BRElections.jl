@@ -135,16 +135,20 @@ const LAST_KNOWN_YEAR = 2024
 """
     validate_year(year) -> Int
 
-Valida um ano eleitoral (par, ≥ $(FIRST_YEAR)). Emite `@warn` para anos
-posteriores a $(LAST_KNOWN_YEAR), cujos arquivos podem ainda não existir.
+Valida um ano eleitoral (par, ≥ $(FIRST_YEAR)). Para anos posteriores a
+$(LAST_KNOWN_YEAR), avisa (uma vez por sessão) que os arquivos podem estar
+incompletos, ser preliminares ou ainda não existir.
 """
 function validate_year(year::Integer)
     iseven(year) || throw(ArgumentError(
         "Ano eleitoral inválido: $year. Eleições brasileiras ocorrem em anos pares."))
     year >= FIRST_YEAR || throw(ArgumentError(
         "Ano $year não suportado. O pacote cobre eleições a partir de $(FIRST_YEAR)."))
-    year > LAST_KNOWN_YEAR && @warn "Ano $year é posterior à última eleição consolidada " *
-        "conhecida ($(LAST_KNOWN_YEAR)); os arquivos podem ainda não estar publicados."
+    # Uma vez por sessão: `:all` e vários anos validam o mesmo ano dezenas de vezes.
+    year > LAST_KNOWN_YEAR && @warn "Os dados de $year ainda não estão consolidados (a última eleição " *
+        "consolidada conhecida pelo pacote é $(LAST_KNOWN_YEAR)): alguns arquivos podem não estar " *
+        "publicados, e os publicados são regerados pelo TSE durante a apuração e o julgamento das " *
+        "candidaturas. Cite a data do download (veja `sources`)." maxlog = 1
     Int(year)
 end
 
