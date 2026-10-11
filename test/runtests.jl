@@ -4,6 +4,7 @@ using DataFrames
 using Dates
 using StringEncodings
 using ZipFile
+using Sockets
 
 # Cache isolado para os testes.
 BRElections.set_cache_dir!(mktempdir())
@@ -1026,6 +1027,26 @@ end
 
         E.request!(m); pump!(m)
         @test m.df === v1 && m.error === nothing && resolved[] == 1
+        @test E.unchanged(v1, nothing, v1) && !E.unchanged(v1, nothing, v2) && !E.unchanged(nothing, nothing, v1)
+        stale_v1 = copy(v1); metadata!(stale_v1, "versao_anterior", true; style = :note)
+        @test !E.unchanged(v1, [stale_v1], v1)            # UF com versão anterior: busca de novo
+
+        # As UFs só são consultadas quando o nacional muda.
+        uf_calls = Ref(0)
+        nat = Ref{Any}(v1)
+        m2 = E.Dashboard(; target = E.Target(:president, nothing, nothing, nothing),
+                         resolve = t -> (url = "br", uf = "BR"),
+                         fetch = q -> q.uf == "BR" ? nat[] : (uf_calls[] += 1; fake_live(nat[].qt_votos;
+                                       eleitorado = 2000, apurado = metadata(nat[], "eleitorado_apurado"),
+                                       at = metadata(nat[], "atualizado_em"), abrangencia = q.uf)),
+                         prepare = q -> (strata = [(uf = "SP", url = "sp")], previous = nothing))
+        E.request!(m2); pump!(m2)
+        @test uf_calls[] == 1 && m2.strata !== nothing && m2.proj !== nothing
+        E.request!(m2); pump!(m2)                          # nada mudou: só o nacional
+        @test uf_calls[] == 1
+        nat[] = v2
+        E.request!(m2); pump!(m2)                          # versão nova: as UFs de novo
+        @test uf_calls[] == 2 && m2.df === v2
         @test m.proj !== nothing && metadata(m.proj, "regra") == "majority"
         txt = screen(m)
         @test occursin("C1", txt) && occursin("Proj.", txt) && occursin("1º t.", txt)
@@ -1106,6 +1127,68 @@ end
         @test occursin("C1", screen(m; w = 70, h = 24))
         key!(m, 'q')
         @test m.quit
+    end
+
+    @testset "Divulgação de Resultados — ETag, novas tentativas e 404 (servidor local)" begin
+        # Servidor HTTP mínimo: responde a sequência dada, uma conexão por resposta,
+        # e guarda os cabeçalhos de cada requisição.
+        function scripted(responses)
+            server = listen(Sockets.localhost, 0)
+            port = Int(getsockname(server)[2])
+            seen = Dict{String,String}[]
+            task = @async for (status, headers, body) in responses
+                sock = accept(server)
+                h = Dict{String,String}()
+                readline(sock)
+                while (line = readline(sock)) != ""
+                    k, v = split(line, ": "; limit = 2)
+                    h[lowercase(k)] = v
+                end
+                push!(seen, h)
+                write(sock, "HTTP/1.1 $status X\r\nContent-Length: $(sizeof(body))\r\nConnection: close\r\n" *
+                            join("$k: $v\r\n" for (k, v) in headers) * "\r\n" * body)
+                close(sock)
+            end
+            (url = "http://127.0.0.1:$port/r$(rand(UInt32)).json", seen, server, task)
+        end
+        delay = BRElections.LIVE_RETRY_DELAY[]
+        BRElections.LIVE_RETRY_DELAY[] = 0.0
+        try
+            # 200 com ETag; depois 304 devolve a versão guardada, e a requisição
+            # levou o If-None-Match
+            srv = scripted([(200, ["ETag" => "\"v1\""], "{\"a\": 1}"), (304, String[], "")])
+            @test BRElections._fetch_live_json(srv.url)["a"] == 1
+            @test BRElections._fetch_live_json(srv.url)["a"] == 1
+            @test !haskey(srv.seen[1], "if-none-match") && srv.seen[2]["if-none-match"] == "\"v1\""
+            @test BRElections._live_cached_json(srv.url)["a"] == 1
+            close(srv.server)
+
+            # 403 e 503 são passageiros: tenta de novo até dar certo
+            srv = scripted([(403, String[], ""), (503, String[], ""), (200, String[], "{\"a\": 2}")])
+            @test BRElections._fetch_live_json(srv.url)["a"] == 2
+            @test length(srv.seen) == 3
+            close(srv.server)
+
+            # esgotadas as tentativas, o erro diz o status
+            srv = scripted([(403, String[], ""), (403, String[], ""), (403, String[], "")])
+            err = try BRElections._fetch_live_json(srv.url); catch e; e; end
+            @test err isa ErrorException && occursin("HTTP 403", err.msg)
+            close(srv.server)
+
+            # 404 é "não publicado": sem nova tentativa
+            srv = scripted([(404, String[], "")])
+            @test_throws ArgumentError BRElections._fetch_live_json(srv.url)
+            @test length(srv.seen) == 1
+            close(srv.server)
+        finally
+            BRElections.LIVE_RETRY_DELAY[] = delay
+        end
+        @test BRElections._live_cached_json("http://127.0.0.1:1/nunca.json") === nothing
+
+        # Várias consultas: a que falha usa a última versão dela; sem nenhuma, `nothing`
+        ok(q) = q == 2 ? error("CDN fora") : q
+        @test BRElections._fetch_all([1, 2, 3]; fetch = ok, fallback = q -> -q) == [1, -2, 3]
+        @test BRElections._fetch_all([1, 2, 3]; fetch = ok, fallback = q -> nothing) === nothing
     end
 
     @testset "Prestação de contas e novos datasets — URLs e anos" begin

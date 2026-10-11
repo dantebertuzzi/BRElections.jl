@@ -50,7 +50,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Requires Julia 1.10 (the current LTS); 1.9 is no longer supported.
 - `live_results` keeps the last version of each result in memory and
   revalidates it with the TSE (ETag) on every call: polling no longer
-  downloads unchanged data.
+  downloads unchanged data. Transient refusals and failures of the TSE's CDN
+  (403, 429, 5xx, timeouts), common at the peak of election night, are
+  retried with backoff (`BRElections.LIVE_RETRIES`); 404 still means "not
+  published". The timeout is 20 s instead of 60 s.
+- In the state-by-state projection, a state whose request fails uses its last
+  version (flagged `versao_anterior`) instead of dropping the whole projection
+  to a single block; the dashboard says how many states are behind, and only
+  polls the states when the national result changes (1 request every 10 s
+  instead of 29 while nothing is new).
 
 - `filter` can use columns not listed in `columns`: they are read for the
   filter and left out of the result. `columns = [:nm_votavel], filter = row ->

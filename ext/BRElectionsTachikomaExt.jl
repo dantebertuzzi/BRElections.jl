@@ -256,7 +256,7 @@ function request!(m::Dashboard, target::Target = m.target)
     same = target == m.target
     query, setup = same ? (m.query, m.setup) : (nothing, nothing)
     resolve, fetch, prepare = m.resolve, m.fetch, m.prepare
-    oldproj, oldstamp = same ? (m.proj, stamp(m.df, m.strata)) : (nothing, nothing)
+    oldproj, oldstrata, olddf = same ? (m.proj, m.strata, m.df) : (nothing, nothing, nothing)
     m.loading = true
     spawn_task!(m.tq, :fetch) do
         try
@@ -266,12 +266,16 @@ function request!(m::Dashboard, target::Target = m.target)
             if _rule(df) !== :proportional
                 # A projeção é um extra: se falhar, o painel mostra só a apuração.
                 setup === nothing && (setup = try prepare(q) catch; (strata = nothing, previous = nothing) end)
-                strata = setup.strata === nothing ? nothing : _fetch_all(setup.strata; fetch)
-                previous = strata === nothing && setup.strata !== nothing ? nothing : setup.previous
-                # Nada mudou desde a última consulta (o caso comum, consultando a
-                # cada poucos segundos): a projeção anterior continua valendo.
-                proj = oldproj !== nothing && stamp(df, strata) == oldstamp ? oldproj :
-                       try projection(df; strata, previous, nsims = NSIMS) catch; nothing end
+                if unchanged(olddf, oldstrata, df) && oldproj !== nothing
+                    # O nacional não mudou (o caso comum, consultando a cada poucos
+                    # segundos): as UFs também não, e a projeção continua valendo —
+                    # uma requisição em vez de 29.
+                    strata, proj = oldstrata, oldproj
+                else
+                    strata = setup.strata === nothing ? nothing : _fetch_all(setup.strata; fetch)
+                    previous = strata === nothing && setup.strata !== nothing ? nothing : setup.previous
+                    proj = try projection(df; strata, previous, nsims = NSIMS) catch; nothing end
+                end
             end
             (gen = gen, target = target, query = q, setup = setup, df = df,
              strata = strata, proj = proj, error = nothing)
@@ -283,9 +287,13 @@ function request!(m::Dashboard, target::Target = m.target)
     nothing
 end
 
-# Versão dos dados: os horários de atualização do TSE do local e dos estratos.
-stamp(df, strata) = df === nothing ? nothing :
-    (metadata(df, "atualizado_em"), strata === nothing ? nothing : [metadata(s, "atualizado_em") for s in strata])
+# A versão nova é a mesma da anterior? Pelo horário de atualização do TSE; e
+# se alguma UF ficou com a versão anterior (consulta falhou), vale buscar de novo.
+unchanged(old, oldstrata, new) =
+    old !== nothing && metadata(old, "atualizado_em") == metadata(new, "atualizado_em") &&
+    (oldstrata === nothing || !any(stale, oldstrata))
+
+stale(df) = metadata(df, "versao_anterior", false)
 
 _message(e::ArgumentError) = e.msg
 _message(e::TaskFailedException) = _message(e.task.exception)
@@ -752,8 +760,12 @@ function draw_candidates!(m::Dashboard, buf, area)
     if m.proj !== nothing && !_final(m)
         how = metadata(m.proj, "estratos") > 1 ? "por UF" : "do local todo"
         metadata(m.proj, "usa_turno_anterior") && (how *= " + 1º turno")
-        set_string!(buf, inner.x + 1, by, " tendência $how · modelo simples, não é pesquisa ",
-                    tstyle(:text_dim); max_x = right(inner) - 16)
+        x = set_string!(buf, inner.x + 1, by, " tendência $how · modelo simples, não é pesquisa ",
+                        tstyle(:text_dim); max_x = right(inner) - 16)
+        # UFs cuja consulta falhou entram com a versão anterior: avisa.
+        late = m.strata === nothing ? 0 : count(stale, m.strata)
+        late > 0 && set_string!(buf, x, by, " ⚠ $late UF$(late == 1 ? "" : "s") com a versão anterior ",
+                                tstyle(:warning); max_x = right(inner) - 16)
     end
 end
 

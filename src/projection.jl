@@ -340,14 +340,21 @@ function _previous_round(q; config = nothing)
               url = _live_results_url(prev.ciclo, ele, q.cargo, lowercase(u), q.cd_municipio)))
 end
 
-# Busca várias consultas ao mesmo tempo; `nothing` se alguma falhar (a
-# projeção então trata o local como um bloco só).
-function _fetch_all(queries; fetch = _live_fetch)
-    try
-        asyncmap(fetch, queries; ntasks = 8)
-    catch
-        nothing
+# Busca várias consultas ao mesmo tempo. Uma que falhe (o CDN recusando no
+# pico da apuração) usa a última versão já baixada dela, marcada com
+# `versao_anterior` em vez de desmontar a projeção por UF; só sem nenhuma
+# versão de alguma delas devolve `nothing` (a projeção então trata o local
+# como um bloco só).
+function _fetch_all(queries; fetch = _live_fetch, fallback = _live_fetch_cached)
+    results = asyncmap(queries; ntasks = 8) do q
+        try
+            fetch(q)
+        catch e
+            e isa InterruptException && rethrow()
+            try fallback(q) catch; nothing end
+        end
     end
+    any(isnothing, results) ? nothing : results
 end
 
 """

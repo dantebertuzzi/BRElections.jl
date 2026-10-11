@@ -39,24 +39,49 @@ _live_results_url(ciclo, ele, cargo, uf, mun) =
 const _LIVE_CACHE = Dict{String,Tuple{String,Any}}()
 const _LIVE_LOCK = ReentrantLock()
 
-function _fetch_live_json(url)
+"Tentativas e espera inicial (s, dobra a cada tentativa) das consultas à Divulgação de Resultados."
+const LIVE_RETRIES = Ref(3)
+const LIVE_RETRY_DELAY = Ref(0.5)
+
+# Na noite da eleição o CDN do TSE recusa (403, 429) ou falha (5xx, timeout)
+# de tempos em tempos: essas respostas são passageiras e valem nova tentativa.
+# Arquivo que não existe responde 404 — esse é "não publicado", sem tentar de
+# novo.
+_transient(status) = status in (403, 408, 429) || status >= 500
+
+function _fetch_live_json(url; retries::Int = LIVE_RETRIES[], timeout = 20)
     cached = lock(() -> get(_LIVE_CACHE, url, nothing), _LIVE_LOCK)
     headers = cached === nothing ? Pair{String,String}[] : ["If-None-Match" => cached[1]]
-    buf = IOBuffer()
-    resp = Downloads.request(url; output = buf, headers, timeout = 60, throw = false)
-    resp isa Downloads.Response || throw(resp)          # falha de rede
-    resp.status == 304 && cached !== nothing && return cached[2]
-    if resp.status in (403, 404)
-        throw(ArgumentError(
-            "Sem resultado publicado no TSE para esta consulta (HTTP $(resp.status)): $url. " *
-            "Confira se o cargo está em disputa nesse local e nessa eleição."))
+    err = nothing
+    for attempt in 1:retries
+        buf = IOBuffer()
+        resp = Downloads.request(url; output = buf, headers, timeout, throw = false)
+        if resp isa Downloads.Response
+            resp.status == 304 && cached !== nothing && return cached[2]
+            if 200 <= resp.status < 300
+                data = JSON.parse(String(take!(buf)))
+                i = findfirst(h -> lowercase(first(h)) == "etag", resp.headers)
+                i === nothing || lock(() -> (_LIVE_CACHE[url] = (last(resp.headers[i]), data)), _LIVE_LOCK)
+                return data
+            end
+            resp.status == 404 && throw(ArgumentError(
+                "Sem resultado publicado no TSE para esta consulta (HTTP 404): $url. " *
+                "Confira se o cargo está em disputa nesse local e nessa eleição."))
+            err = ErrorException(
+                "A Divulgação de Resultados do TSE respondeu HTTP $(resp.status) após $attempt tentativa(s): $url" *
+                (resp.status == 403 ? " (o CDN do TSE recusa requisições de tempos em tempos, " *
+                                      "sobretudo nos picos da apuração; tente de novo em instantes)" : ""))
+            _transient(resp.status) || throw(err)
+        else
+            err = resp                                   # falha de rede ou timeout
+        end
+        attempt < retries && sleep(LIVE_RETRY_DELAY[] * 2.0^(attempt - 1))
     end
-    200 <= resp.status < 300 || error("A Divulgação de Resultados do TSE respondeu HTTP $(resp.status): $url")
-    data = JSON.parse(String(take!(buf)))
-    i = findfirst(h -> lowercase(first(h)) == "etag", resp.headers)
-    i === nothing || lock(() -> (_LIVE_CACHE[url] = (last(resp.headers[i]), data)), _LIVE_LOCK)
-    data
+    throw(err)
 end
+
+# A última versão já baixada de `url`, sem consultar a rede (`nothing` se não há).
+_live_cached_json(url) = lock(() -> (c = get(_LIVE_CACHE, url, nothing); c === nothing ? nothing : c[2]), _LIVE_LOCK)
 
 _toint(x) = x === nothing || isempty(x) ? 0 : parse(Int, x)
 _tofloat(x) = x === nothing || isempty(x) ? 0.0 : parse(Float64, replace(x, ',' => '.'))
@@ -239,8 +264,20 @@ function _live_query(office::Union{Symbol,Integer};
      abrangencia = mun === nothing ? nothing : "$(mun.nm_municipio) - $(mun.sg_uf)")
 end
 
-function _live_fetch(q)
-    df = _parse_live_results(_fetch_live_json(q.url))
+_live_fetch(q) = _live_df(q, _fetch_live_json(q.url))
+
+# A última versão já baixada da consulta, marcada com `versao_anterior`
+# (`nothing` se nunca foi baixada): o que usar quando uma consulta falha.
+function _live_fetch_cached(q)
+    data = _live_cached_json(q.url)
+    data === nothing && return nothing
+    df = _live_df(q, data)
+    metadata!(df, "versao_anterior", true; style = :note)
+    df
+end
+
+function _live_df(q, data)
+    df = _parse_live_results(data)
     metadata!(df, "eleicao", q.eleicao; style = :note)
     metadata!(df, "cd_eleicao", q.cd_eleicao; style = :note)
     metadata!(df, "dt_eleicao", q.dt; style = :note)
