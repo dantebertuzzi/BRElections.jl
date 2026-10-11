@@ -11,7 +11,10 @@ abstract: >-
   voter profiles and polling places (with coordinates) from the open-data
   repository, several years and states per call, each table carrying its
   provenance and ready ABNT, APA or BibTeX references for the data;
-  live vote counting from the TSE's results system; and a crosswalk between
+  live vote counting from the TSE's results system, with a projection of the
+  count (projected result, win probability and what is already mathematically
+  decided, by state or municipality and calibrated on the 2022 count) and a
+  terminal dashboard; and a crosswalk between
   TSE and IBGE municipality codes. It handles downloads with retries, a
   portable local cache revalidated against the TSE, streaming ZIP extraction
   with ISO-8859-1 to UTF-8 transcoding in constant memory, multithreaded CSV
@@ -23,8 +26,8 @@ authors:
   - family-names: Bertuzzi
     given-names: Dante
     email: dantesbertuzzi@gmail.com
-version: 0.3.0
-date-released: "2026-10-05"
+version: 0.4.0
+date-released: "2026-10-11"
 license: MIT
 doi: 10.5281/zenodo.22182707
 identifiers:

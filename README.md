@@ -392,7 +392,7 @@ APA and BibTeX. A [`CITATION.bib`](CITATION.bib) is also provided:
   title   = {{BRElections.jl}: a {Julia} interface to {Brazilian} electoral
              open data ({TSE})},
   year    = {2026},
-  version = {0.3.0},
+  version = {0.4.0},
   doi     = {10.5281/zenodo.22182707},
   url     = {https://github.com/dantebertuzzi/BRElections.jl},
   note    = {Julia package}
