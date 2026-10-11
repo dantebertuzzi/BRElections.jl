@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-11
+
+Election night: a projection of the count with win probabilities and what is
+already mathematically decided, a terminal dashboard (`live_dashboard`), and
+`filter` that reads the columns it needs, with large files read in parallel.
+
+### Upgrading from 0.3
+
+- Requires Julia 1.10 (the current LTS); 1.9 is no longer supported.
+- `live_results`: candidates going to the runoff now have `eleito = false`
+  (the TSE flags them too, and they came out `true`).
+- Money columns (`VR_*`) with a thousands separator change value: `"1.500"`
+  was read as 1.5 and is now 1500; columns like `"1.234.567,89"`, left as text
+  before, are now `Float64`.
+- Reading several files (several states of a national dataset, for example):
+  a column that is a number in one file and text in another is now `String`;
+  it used to be `Any`.
+- `live_results` no longer treats HTTP 403 as "not published": it retries, and
+  raises an `ErrorException` if the CDN keeps refusing. 404 still raises an
+  `ArgumentError`.
+
 ### Added
 
 - `live_dashboard`: a terminal dashboard for election night, built on
@@ -324,7 +345,8 @@ First public release.
 - Test suite that runs offline by default against synthetic fixtures, with
   network smoke tests against the TSE CDN behind `BRElections_TEST_NETWORK`.
 
-[Unreleased]: https://github.com/dantebertuzzi/BRElections.jl/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/dantebertuzzi/BRElections.jl/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/dantebertuzzi/BRElections.jl/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/dantebertuzzi/BRElections.jl/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/dantebertuzzi/BRElections.jl/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/dantebertuzzi/BRElections.jl/releases/tag/v0.1.1
