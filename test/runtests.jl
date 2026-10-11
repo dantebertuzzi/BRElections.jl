@@ -995,6 +995,30 @@ end
         @test metadata(with_prev, "usa_turno_anterior")
         @test_throws ArgumentError projection(nat0; strata = [a, b0], previous = [prev_a])
 
+        # Estrato "demais municípios": o total menos as partes, sem negativos.
+        tot = fake_live([1000, 800]; eleitorado = 3000, apurado = 2000, abrangencia = "RN")
+        p1 = fake_live([600, 300]; eleitorado = 1500, apurado = 1200, abrangencia = "NATAL")
+        p2 = fake_live([100, 600]; eleitorado = 600, apurado = 300, abrangencia = "MOSSORÓ")
+        res = BRElections._residual(tot, [p1, p2])
+        @test res.qt_votos == [300, 0]                        # 800 − 900 vira 0
+        @test metadata(res, "eleitorado") == 900 && metadata(res, "eleitorado_apurado") == 500
+        @test metadata(res, "abrangencia") == "Demais municípios" && metadata(res, "estrato") == "resto"
+        @test metadata(tot, "abrangencia") == "RN"            # o total não é alterado
+
+        # _projection_inputs: estratos + resto, com os parâmetros municipais; se
+        # algum estrato falha, bloco só com o 1º turno do local todo.
+        prevtot = fake_live([900, 900, 200]; nr = [1, 2, 3], abrangencia = "RN")
+        setup = (strata = [(uf = "RN", url = "a"), (uf = "RN", url = "b")], residual = true,
+                 previous = [p1, p2, res], previous_total = prevtot, params = BRElections.PROJECTION_PARAMS_MUNICIPAL)
+        inp = BRElections._projection_inputs(setup, tot; fetch = q -> q.url == "a" ? p1 : p2)
+        @test length(inp.strata) == 3 && metadata(inp.strata[3], "estrato") == "resto"
+        @test inp.params === BRElections.PROJECTION_PARAMS_MUNICIPAL && inp.previous === setup.previous
+        @test projection(tot; inp...) isa DataFrame
+        down = BRElections._projection_inputs(setup, tot; fetch = q -> error("CDN fora"))
+        @test down.strata === nothing && only(down.previous) === prevtot && down.params === BRElections.PROJECTION_PARAMS_MUNICIPAL
+        old_shape = (strata = nothing, previous = [prevtot])     # sem estratos, formato simples
+        @test only(BRElections._projection_inputs(old_shape, tot).previous) === prevtot
+
         # nada apurado e sem 1º turno: não há base
         @test_throws ArgumentError projection(fake_live([0, 0]; eleitorado = 1000, apurado = 0))
 
@@ -1031,9 +1055,14 @@ end
                         resolve = t -> (resolved[] += 1; (url = "x", uf = something(t.uf, "BR"))),
                         fetch = q -> current[] isa Exception ? throw(current[]) : current[],
                         prepare = q -> (strata = nothing, previous = nothing))
+        # Espera a consulta e a projeção (que roda à parte, depois dela).
         pump!(m) = begin
-            @test timedwait(() -> isready(m.tq.channel), 60.0) === :ok
-            Base.invokelatest(T.drain_tasks!, e -> Base.invokelatest(T.update!, m, e), m.tq)
+            deadline = time() + 60
+            while true
+                @test timedwait(() -> isready(m.tq.channel), 60.0) === :ok
+                Base.invokelatest(T.drain_tasks!, e -> Base.invokelatest(T.update!, m, e), m.tq)
+                (m.loading || m.projecting) && time() < deadline || break
+            end
         end
         key!(m, k) = Base.invokelatest(T.update!, m, k isa Char ? T.KeyEvent(k) : T.KeyEvent(k))
         screen(m; w = 130, h = 40) = Base.invokelatest() do
@@ -1042,8 +1071,14 @@ end
             join((String([buf.content[T.buf_index(buf, x, y)].char for x in 1:w]) for y in 1:h), "\n")
         end
 
-        E.request!(m); pump!(m)
-        @test m.df === v1 && m.error === nothing && resolved[] == 1
+        E.request!(m)
+        @test timedwait(() -> isready(m.tq.channel), 60.0) === :ok
+        Base.invokelatest(T.drain_tasks!, e -> Base.invokelatest(T.update!, m, e), m.tq)
+        # os votos aparecem antes da projeção, que segue calculando à parte
+        @test m.df === v1 && (m.projecting || m.proj !== nothing)
+        m.projecting && @test occursin("calculando a tendência", screen(m))
+        pump!(m)
+        @test m.df === v1 && m.error === nothing && resolved[] == 1 && !m.projecting
         @test E.unchanged(v1, nothing, v1) && !E.unchanged(v1, nothing, v2) && !E.unchanged(nothing, nothing, v1)
         stale_v1 = copy(v1); metadata!(stale_v1, "versao_anterior", true; style = :note)
         @test !E.unchanged(v1, [stale_v1], v1)            # UF com versão anterior: busca de novo
@@ -1064,6 +1099,21 @@ end
         nat[] = v2
         E.request!(m2); pump!(m2)                          # versão nova: as UFs de novo
         @test uf_calls[] == 2 && m2.df === v2
+        @test E.by_uf(m2)                                       # estrato "SP": painel por região
+
+        # Estratos municipais: os painéis listam municípios.
+        mun_part(name, f) = fake_live(round.(Int, v2.qt_votos ./ 2); eleitorado = 1000,
+                                      apurado = round(Int, 1000f), abrangencia = name)
+        mm = E.Dashboard(; target = E.Target(:governor, "RN", nothing, nothing),
+                         resolve = t -> (url = "rn", uf = "RN"), fetch = q -> q.url == "rn" ? v2 : mun_part(q.uf, q.url == "natal" ? 0.9 : 0.4),
+                         prepare = q -> (strata = [(uf = "NATAL", url = "natal"), (uf = "MOSSORÓ", url = "mossoro")],
+                                         residual = false, previous = nothing, previous_total = nothing))
+        E.request!(mm); pump!(mm)
+        @test mm.strata !== nothing && !E.by_uf(mm)
+        txt = screen(mm)
+        @test occursin("municípios", txt) && occursin("Natal", txt) && !occursin(" regiões ", txt)
+        mm.screen = :analysis
+        @test occursin("municípios pelo peso do que falta", screen(mm))
         @test m.proj !== nothing && metadata(m.proj, "regra") == "majority"
         txt = screen(m)
         @test occursin("C1", txt) && occursin("Proj.", txt) && occursin("1º t.", txt)

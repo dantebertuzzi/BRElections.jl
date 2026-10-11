@@ -11,7 +11,7 @@ module BRElectionsTachikomaExt
 
 using BRElections
 using BRElections: LIVE_OFFICES, MUNICIPAL_OFFICES, OFFICES, REGIONS, _live_query, _live_fetch, _office_code,
-                   _projection_setup, _fetch_all, _rule
+                   _projection_setup, _projection_inputs, _fetch_all, _uf_query, _rule
 using DataFrames
 using Dates
 using Tachikoma
@@ -75,6 +75,8 @@ const PALETTE = [ColorRGB(0x5f, 0xaf, 0xff), ColorRGB(0xff, 0x87, 0x5f), ColorRG
     df::Union{Nothing,DataFrame} = nothing
     strata::Union{Nothing,Vector} = nothing    # resultados por UF (presidente)
     proj::Union{Nothing,DataFrame} = nothing
+    proj_df::Union{Nothing,DataFrame} = nothing    # a versão dos dados que a projeção usou
+    projecting::Bool = false
     history::Vector{Snapshot} = Snapshot[]
     error::Union{Nothing,String} = nothing
     loading::Bool = false
@@ -228,7 +230,7 @@ end
 function demo_dashboard()
     q = _live_query(:president)
     national = _live_fetch(q)
-    strata = BRElections._fetch_all(BRElections._strata_queries(q))
+    strata = _fetch_all([_uf_query(q, u) for u in BRElections.UFS if u != "BR"])
     strata === nothing && error("Não foi possível baixar os resultados por UF para a demonstração.")
     r = Replay(national, strata)
     Dashboard(; target = Target(:president, nothing, nothing, nothing), interval = 2.0,
@@ -253,38 +255,57 @@ end
 function request!(m::Dashboard, target::Target = m.target)
     m.generation += 1
     gen = m.generation
-    same = target == m.target
-    query, setup = same ? (m.query, m.setup) : (nothing, nothing)
-    resolve, fetch, prepare = m.resolve, m.fetch, m.prepare
-    oldproj, oldstrata, olddf = same ? (m.proj, m.strata, m.df) : (nothing, nothing, nothing)
+    query = target == m.target ? m.query : nothing
+    resolve, fetch = m.resolve, m.fetch
     m.loading = true
     spawn_task!(m.tq, :fetch) do
         try
             q = query === nothing ? resolve(target) : query
-            df = fetch(q)
-            strata = proj = nothing
-            if _rule(df) !== :proportional
-                # A projeção é um extra: se falhar, o painel mostra só a apuração.
-                setup === nothing && (setup = try prepare(q) catch; (strata = nothing, previous = nothing) end)
-                if unchanged(olddf, oldstrata, df) && oldproj !== nothing
-                    # O nacional não mudou (o caso comum, consultando a cada poucos
-                    # segundos): as UFs também não, e a projeção continua valendo —
-                    # uma requisição em vez de 29.
-                    strata, proj = oldstrata, oldproj
-                else
-                    strata = setup.strata === nothing ? nothing : _fetch_all(setup.strata; fetch)
-                    previous = strata === nothing && setup.strata !== nothing ? nothing : setup.previous
-                    proj = try projection(df; strata, previous, nsims = NSIMS) catch; nothing end
-                end
-            end
-            (gen = gen, target = target, query = q, setup = setup, df = df,
-             strata = strata, proj = proj, error = nothing)
+            (gen = gen, target = target, query = q, df = fetch(q), error = nothing)
         catch e
-            (gen = gen, target = target, query = nothing, setup = nothing, df = nothing,
-             strata = nothing, proj = nothing, error = e)
+            (gen = gen, target = target, query = nothing, df = nothing, error = e)
         end
     end
     nothing
+end
+
+# A projeção roda à parte, depois que os votos já estão na tela: preparar um
+# local (baixar o 1º turno de cada município, por exemplo) pode levar vários
+# segundos. Uma de cada vez, e uma consulta nova não a cancela — senão, com o
+# preparo mais longo que o intervalo entre consultas, ela nunca terminaria.
+# Ao terminar, se os dados mudaram nesse meio-tempo, roda de novo.
+function project!(m::Dashboard)
+    (m.df === nothing || m.projecting || _rule(m.df) === :proportional) && return
+    unchanged(m.proj_df, m.strata, m.df) && m.proj !== nothing && return
+    m.projecting = true
+    target, q, df, setup = m.target, m.query, m.df, m.setup
+    fetch, prepare = m.fetch, m.prepare
+    spawn_task!(m.tq, :project) do
+        try
+            # A projeção é um extra: se falhar, o painel mostra só a apuração.
+            s = setup === nothing ? (try prepare(q) catch; (strata = nothing, previous = nothing) end) : setup
+            inputs = _projection_inputs(s, df; fetch)
+            proj = try projection(df; inputs..., nsims = NSIMS) catch; nothing end
+            (target = target, df = df, setup = s, strata = inputs.strata, proj = proj)
+        catch
+            (target = target, df = df, setup = setup, strata = nothing, proj = nothing)
+        end
+    end
+    nothing
+end
+
+function receive_projection!(m::Dashboard, r)
+    m.projecting = false
+    if r.target == m.target
+        m.setup, m.strata, m.proj, m.proj_df = r.setup, r.strata, r.proj, r.df
+        # A chance do líder entra no ponto da evolução da versão projetada.
+        if r.proj !== nothing && !isempty(m.history) && m.history[end].at == metadata(r.df, "atualizado_em")
+            h = m.history[end]
+            m.history[end] = Snapshot(h.at, h.pc_secoes, h.gap, snapshot(r.df, r.proj).chance,
+                                      h.votos, h.secoes, h.total_secoes)
+        end
+    end
+    project!(m)                                   # dados mais novos chegaram enquanto isso?
 end
 
 # A versão nova é a mesma da anterior? Pelo horário de atualização do TSE; e
@@ -315,15 +336,15 @@ function receive!(m::Dashboard, r)
     if r.target != m.target
         m.target = r.target
         m.history = Snapshot[]
-        m.df = nothing
+        m.df = m.proj = m.proj_df = m.strata = m.setup = nothing
         m.scroll = 0
         empty!(m.flash)
     end
-    m.query, m.setup = r.query, r.setup
+    m.query = r.query
     old = m.df
     df = r.df
     if old === nothing || metadata(df, "atualizado_em") != metadata(old, "atualizado_em")
-        push!(m.history, snapshot(df, r.proj))
+        push!(m.history, snapshot(df))
         if old !== nothing
             # O odômetro parte do que está na tela (pode ser o meio de outra animação).
             shown = animated(m)
@@ -340,7 +361,8 @@ function receive!(m::Dashboard, r)
     for nr in df.nr_candidato
         haskey(m.colors, nr) || (m.colors[nr] = PALETTE[mod1(length(m.colors) + 1, length(PALETTE))])
     end
-    m.df, m.strata, m.proj = df, r.strata, r.proj
+    m.df = df
+    project!(m)
     nothing
 end
 
@@ -393,6 +415,8 @@ fmtqty(x) = x >= 1e6 ? fmtpct(x / 1e6; digits = 1, suffix = " mi") :
 function update!(m::Dashboard, evt::TaskEvent)
     if evt.id === :fetch
         receive!(m, evt.value)
+    elseif evt.id === :project
+        receive_projection!(m, evt.value)
     elseif evt.id === :clock
         # Depois da totalização final os números não mudam mais: só sob `r`.
         !m.loading && !_final(m) && time() - m.last_fetch >= m.interval && request!(m)
@@ -761,8 +785,11 @@ function draw_candidates!(m::Dashboard, buf, area)
     by = bottom(inner) + 1
     n > visible && set_string!(buf, right(inner) - 14, by,
                                " $(m.scroll + 1)–$(min(n, m.scroll + visible)) de $n ", tstyle(:text_dim))
-    if m.proj !== nothing && !_final(m)
-        how = metadata(m.proj, "estratos") > 1 ? "por UF" : "do local todo"
+    if m.proj === nothing && m.projecting
+        set_string!(buf, inner.x + 1, by, " $(spinner(m)) calculando a tendência… ", tstyle(:accent);
+                    max_x = right(inner) - 16)
+    elseif m.proj !== nothing && !_final(m)
+        how = metadata(m.proj, "estratos") > 1 ? (by_uf(m) ? "por UF" : "por município") : "do local todo"
         metadata(m.proj, "usa_turno_anterior") && (how *= " + 1º turno")
         note = nothing_counted(m.df) ?
             " nada apurado: projeção = 1º turno, eliminados divididos na proporção " :
@@ -808,13 +835,24 @@ end
 
 # Por região: quanto já foi apurado, quanto do eleitorado que falta no país
 # está lá (o peso do atraso) e quem lidera entre os dois primeiros do país.
+# Os estratos são UFs (presidente no Brasil todo) ou municípios (cargo numa UF)?
+by_uf(m::Dashboard) = all(s -> haskey(REGIONS, metadata(s, "abrangencia")), m.strata)
+
+# Grupos do painel lateral: por região, quando os estratos são UFs; senão os
+# próprios municípios, dos que mais pesam no que falta aos que menos pesam.
+function strata_groups(m::Dashboard)
+    by_uf(m) && return [(reg, [s for s in m.strata if get(REGIONS, metadata(s, "abrangencia"), "") == reg])
+                        for reg in REGION_ORDER]
+    left(s) = max(metadata(s, "eleitorado") - metadata(s, "eleitorado_apurado"), 0)
+    [(metadata(s, "abrangencia"), [s]) for s in sort(m.strata; by = left, rev = true)]
+end
+
 function region_rows(m::Dashboard)
     df = m.df
     lead = nrow(df) >= 2 ? (df.nr_candidato[1], df.nr_candidato[2]) : nothing
     names = Dict(zip(df.nr_candidato, df.nm_urna_candidato))
     total_left = sum(max(metadata(s, "eleitorado") - metadata(s, "eleitorado_apurado"), 0) for s in m.strata)
-    map(REGION_ORDER) do reg
-        parts = [s for s in m.strata if get(REGIONS, metadata(s, "abrangencia"), "") == reg]
+    map(strata_groups(m)) do (reg, parts)
         isempty(parts) && return nothing
         ele = sum(metadata(s, "eleitorado") for s in parts)
         apur = sum(metadata(s, "eleitorado_apurado") for s in parts)
@@ -834,14 +872,14 @@ function region_rows(m::Dashboard)
 end
 
 function draw_regions!(m::Dashboard, buf, area)
-    inner = render(Block(; title = " regiões ", title_style = tstyle(:title),
+    inner = render(Block(; title = by_uf(m) ? " regiões " : " municípios ", title_style = tstyle(:title),
                          title_right = " apur. · resta ", title_right_style = tstyle(:text_dim)), area, buf)
     inner.height < 1 && return
     x, r = inner.x + 1, right(inner) - 1
     for (k, row) in enumerate(region_rows(m))
         y = inner.y + k - 1
         y > bottom(inner) && break
-        xx = set_string!(buf, x, y, rpad(row.region, 12), tstyle(:text); max_x = r)
+        xx = set_string!(buf, x, y, rpad(clip(titlecase(row.region), 12), 12), tstyle(:text); max_x = r)
         late = row.pc_apurado < 99.5 && row.pc_falta >= 25
         xx = set_string!(buf, xx, y, lpad(fmtpct(row.pc_apurado; digits = 0), 5),
                          row.pc_apurado >= 99.95 ? tstyle(:success) : tstyle(:text_bright); max_x = r)
@@ -928,6 +966,7 @@ function draw_analysis!(m::Dashboard, buf, area)
     if m.proj === nothing || nrow(m.proj) == 0
         msg = m.df !== nothing && _rule(m.df) === :proportional ?
             "Cargo proporcional: a vaga depende do quociente eleitoral, e o painel não projeta vagas." :
+            m.projecting ? "$(spinner(m))  Calculando a tendência (na primeira vez, baixa o 1º turno de cada parte)…" :
             "Projeção indisponível para esta consulta."
         r = center(area, min(textwidth(msg), area.width), 1)
         set_string!(buf, r.x, r.y, msg, tstyle(:text_dim); max_x = right(area))
@@ -1128,7 +1167,9 @@ end
 
 # Por UF, das que mais pesam no que falta apurar às que menos pesam.
 function draw_states!(m::Dashboard, buf, area)
-    inner = render(Block(; title = " UFs pelo peso do que falta ", title_style = tstyle(:title)), area, buf)
+    uf = by_uf(m)
+    inner = render(Block(; title = uf ? " UFs pelo peso do que falta " : " municípios pelo peso do que falta ",
+                         title_style = tstyle(:title)), area, buf)
     inner.height < 2 && return
     x, r = inner.x + 1, right(inner) - 1
     df = m.df
@@ -1137,15 +1178,17 @@ function draw_states!(m::Dashboard, buf, area)
     left(s) = max(metadata(s, "eleitorado") - metadata(s, "eleitorado_apurado"), 0)
     total = max(sum(left, m.strata), 1)
     rows = sort(m.strata; by = left, rev = true)
-    set_string!(buf, x, inner.y, "UF  região        apur.  resta  vantagem", tstyle(:text_dim; bold = true); max_x = r)
+    set_string!(buf, x, inner.y, (uf ? "UF  região       " : "município        ") * "apur.  resta  vantagem",
+                tstyle(:text_dim; bold = true); max_x = r)
     for (k, s) in enumerate(rows)
         y = inner.y + k
         y > bottom(inner) && break
-        uf = metadata(s, "abrangencia")
+        name = metadata(s, "abrangencia")
         ele = metadata(s, "eleitorado")
         apur = ele > 0 ? 100 * metadata(s, "eleitorado_apurado") / ele : 0.0
         resta = 100 * left(s) / total
-        xx = set_string!(buf, x, y, rpad(uf, 4) * rpad(get(REGIONS, uf, ""), 13), tstyle(:text); max_x = r)
+        label = uf ? rpad(name, 4) * rpad(get(REGIONS, name, ""), 13) : rpad(clip(titlecase(name), 16), 17)
+        xx = set_string!(buf, x, y, label, tstyle(:text); max_x = r)
         xx = set_string!(buf, xx, y, lpad(fmtpct(apur; digits = 0), 5),
                          apur >= 99.95 ? tstyle(:success) : tstyle(:text_bright); max_x = r)
         xx = set_string!(buf, xx, y, lpad(fmtpct(resta; digits = 1), 7),

@@ -323,8 +323,11 @@ alternadas com `Tab`:
   no 1º turno; a chance do líder ao longo da apuração; e as UFs ordenadas
   pelo peso do que falta apurar nelas.
 
-Na eleição presidencial do Brasil todo, a tendência é calculada por UF, e
-num 2º turno parte do 1º turno de cada UF (veja [`projection`](@ref)).
+Na eleição presidencial do Brasil todo, a tendência é calculada por UF; num
+cargo disputado numa UF (Governador, Senador), por município. Num 2º turno,
+cada parte parte do seu 1º turno (veja [`live_projection`](@ref)). Os votos
+aparecem assim que chegam; a tendência é calculada em seguida, em segundo
+plano (na primeira vez num local, baixa o 1º turno de cada parte).
 
 **Tempo real.** O TSE não publica votos um a um: cada urna envia o boletim
 da seção inteira, e o TSE republica o resultado agregado conforme os boletins

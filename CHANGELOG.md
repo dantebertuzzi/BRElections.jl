@@ -34,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   off by 0.9 points with under 30% counted and the actual winner is favoured
   from the start, while extrapolating the national total favours the loser
   until 80% is counted.
+- Projection **by municipality** for offices contested across a state
+  (governor, senator, president within a state): the 60 largest
+  municipalities (`MAX_MUNICIPAL_STRATA`) each start from their own first
+  round, and the rest of the state is one block. In the 12 state runoffs of
+  2022 (`dev/calibrate_governor.jl`) it cut the early error from 4.6 to 2.8
+  points and picked the winner early on 85% of the time instead of 77%. Its
+  parameters (`PROJECTION_PARAMS_MUNICIPAL`) are more cautious, and are also
+  used when a place is projected as a single block, which was overconfident.
+- The dashboard shows the votes as soon as they arrive and computes the
+  projection in the background (preparing a state takes a few seconds the
+  first time); new polls don't cancel it.
 - `live_results` metadata: `cd_cargo` and `dt_eleicao`.
 - `election` in `live_results` (and the dashboard) stands for that voting day:
   for an office or place it does not cover, the sibling election of the same

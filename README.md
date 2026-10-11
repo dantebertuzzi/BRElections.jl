@@ -273,6 +273,17 @@ the start — extrapolating the national total is off by 4 points early on and
 favours the loser until 80% is counted. It is a simple, transparent model
 with no polls: it shows where the count points, not what will happen.
 
+For an office contested across a state (governor, senator, or president within
+a state), the projection is done **by municipality** in the same way: the 60
+largest municipalities (`BRElections.MAX_MUNICIPAL_STRATA`) each start from
+their own first round, and the rest of the state is one more block. In the 12
+state runoffs of 2022 (`dev/calibrate_governor.jl`) this cut the error from 4.6
+to 2.8 points with up to 25% counted (2.7 to 1.6 overall) and picked the winner
+85% of the time early on instead of 77%; it still struggles where the vote
+transfer was very uneven (MS and SE in 2022, where the first-round leader lost
+the runoff). The first call for a state downloads each municipality's first
+round once (a few seconds; final files).
+
 #### Terminal dashboard
 
 `live_dashboard` (needs [Tachikoma.jl](https://github.com/kahliburke/Tachikoma.jl),

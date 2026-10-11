@@ -152,6 +152,26 @@ erram para o lado da cautela.
 const PROJECTION_PARAMS = (prior = 5.0, prior_previous = 150.0, observed = 160.0, shift = 0.12, shift_previous = 0.08)
 
 """
+Parâmetros da projeção por município (cargo disputado numa UF) e de um local
+tratado como bloco só, no lugar de
+[`PROJECTION_PARAMS`](@ref BRElections.PROJECTION_PARAMS), que vale para a
+projeção nacional por UF. Com municípios, o 1º turno de cada um pesa menos, e
+sobra mais incerteza comum: a transferência de votos entre os turnos varia
+mais de um município para outro do que de uma UF para outra.
+
+Calibrados nos 12 2º turnos estaduais de 2022 (`dev/calibrate_governor.jl`):
+a projeção por município erra em média 1,6 ponto (2,8 com até 25% apurado),
+contra 2,7 (4,6) do estado como um bloco só, acerta o vencedor 92% das vezes
+(85% com até 25% apurado, contra 77%), e a faixa de 80% contém o resultado em
+82–91% dos casos em cada fase. Ainda erra mais onde a transferência foi muito
+desigual (MS e SE em 2022, em que quem liderou o 1º turno perdeu o 2º). Com
+eles, o estado como bloco só também deixa de ser confiante demais (a faixa
+cobria 64–69%; passa a 76–88%).
+"""
+const PROJECTION_PARAMS_MUNICIPAL = (prior = 5.0, prior_previous = 50.0, observed = 160.0, shift = 0.12,
+                                     shift_previous = 0.12)
+
+"""
     projection(df; strata = nothing, previous = nothing, nsims = 4000, rng) -> DataFrame
 
 Tendência da apuração: o resultado projetado de cada candidato e a chance de
@@ -335,14 +355,22 @@ end
 
 # --- Busca no TSE ---------------------------------------------------------
 
-# Estratos de uma consulta: as UFs, na eleição presidencial do Brasil todo.
-# Devolve as consultas de cada uma (mesma eleição, outra abrangência).
-function _strata_queries(q)
-    (q.cargo == OFFICES.president && q.uf == "BR") || return nothing
-    [merge(q, (uf = u, cd_municipio = nothing, abrangencia = nothing,
-               url = _live_results_url(q.ciclo, q.cd_eleicao, q.cargo, lowercase(u), nothing)))
-     for u in UFS if u != "BR"]
-end
+"""
+Quantos municípios, no máximo, viram estratos próprios na projeção de uma UF:
+os de maior eleitorado. O resto da UF vira um estrato só ("demais
+municípios"), para o painel não consultar centenas de arquivos a cada
+atualização nos estados grandes.
+"""
+const MAX_MUNICIPAL_STRATA = Ref(60)
+
+# Cargos disputados na UF inteira, que podem ser projetados por município.
+const _STATEWIDE_OFFICES = (OFFICES.president, OFFICES.governor, OFFICES.senator)
+
+# Consulta de um estrato: a mesma eleição, outra abrangência.
+_uf_query(q, u) = merge(q, (uf = u, cd_municipio = nothing, abrangencia = nothing,
+                            url = _live_results_url(q.ciclo, q.cd_eleicao, q.cargo, lowercase(u), nothing)))
+_mun_query(q, mun) = merge(q, (cd_municipio = mun.cd_municipio, abrangencia = String(mun.nm_municipio),
+                               url = _live_results_url(q.ciclo, q.cd_eleicao, q.cargo, lowercase(q.uf), mun.cd_municipio)))
 
 # O turno anterior da mesma eleição (mesmo ciclo, mesmo cargo e local, data
 # anterior), ou `nothing` se esta já é a primeira.
@@ -358,16 +386,15 @@ function _previous_round(q; config = nothing)
     end
     (prev.ciclo == q.ciclo && prev.dt < q.dt) || return nothing
     ele = parse(Int, prev.ele)
-    u = q.uf
-    merge(q, (eleicao = prev.nome, cd_eleicao = ele, dt = prev.dt,
-              url = _live_results_url(prev.ciclo, ele, q.cargo, lowercase(u), q.cd_municipio)))
+    merge(q, (eleicao = prev.nome, cd_eleicao = ele, dt = prev.dt, ciclo = prev.ciclo,
+              url = _live_results_url(prev.ciclo, ele, q.cargo, lowercase(q.uf), q.cd_municipio)))
 end
 
 # Busca várias consultas ao mesmo tempo. Uma que falhe (o CDN recusando no
 # pico da apuração) usa a última versão já baixada dela, marcada com
-# `versao_anterior` em vez de desmontar a projeção por UF; só sem nenhuma
-# versão de alguma delas devolve `nothing` (a projeção então trata o local
-# como um bloco só).
+# `versao_anterior` em vez de desmontar a projeção por estrato; só sem
+# nenhuma versão de alguma delas devolve `nothing` (a projeção então trata o
+# local como um bloco só).
 function _fetch_all(queries; fetch = _live_fetch, fallback = _live_fetch_cached)
     results = asyncmap(queries; ntasks = 8) do q
         try
@@ -381,24 +408,98 @@ function _fetch_all(queries; fetch = _live_fetch, fallback = _live_fetch_cached)
 end
 
 """
-    _projection_setup(q; fetch) -> (strata, previous)
+    _residual(total, parts; name = "Demais municípios") -> DataFrame
+
+O que sobra de `total` (o resultado do local todo) tirando as partes: votos,
+eleitorado e eleitorado apurado. É o estrato "demais municípios" de uma UF
+grande. Arquivos publicados em momentos um pouco diferentes podem dar
+diferença negativa; ela vira zero.
+"""
+function _residual(total::AbstractDataFrame, parts; name = "Demais municípios")
+    df = copy(total)
+    sub = Dict{Int,Int}()
+    for p in parts, (nr, v) in zip(p.nr_candidato, p.qt_votos)
+        sub[nr] = get(sub, nr, 0) + v
+    end
+    df.qt_votos = [max(v - get(sub, nr, 0), 0) for (nr, v) in zip(df.nr_candidato, df.qt_votos)]
+    df.pc_votos = 100 .* df.qt_votos ./ max(sum(df.qt_votos), 1)
+    for k in ("eleitorado", "eleitorado_apurado", "votos_validos")
+        metadata!(df, k, max(metadata(total, k) - sum(metadata(p, k) for p in parts; init = 0), 0); style = :note)
+    end
+    metadata!(df, "abrangencia", name; style = :note)
+    metadata!(df, "estrato", "resto"; style = :note)
+    df
+end
+
+"""
+    _projection_setup(q; fetch) -> NamedTuple
 
 O que a projeção de uma consulta precisa além do resultado em si, e que não
-muda durante a apuração: as consultas dos estratos e os resultados do turno
-anterior (já finais) nos mesmos estratos. Feito uma vez por local.
+muda durante a apuração. Feito uma vez por local:
+
+- `strata`: as consultas dos estratos — as UFs, na eleição presidencial do
+  Brasil todo; os municípios, num cargo disputado numa UF (os
+  `MAX_MUNICIPAL_STRATA` maiores, se houver mais); `nothing` sem estratos;
+- `residual`: se o resto da UF entra como um estrato a mais;
+- `previous`: o turno anterior (já final) nos mesmos estratos, na mesma
+  ordem, com o resto se houver; `nothing` se não há turno anterior;
+- `previous_total`: o turno anterior do local todo, para quando os estratos
+  não puderem ser buscados;
+- `params`: os parâmetros da projeção para esses estratos
+  ([`PROJECTION_PARAMS_MUNICIPAL`](@ref BRElections.PROJECTION_PARAMS_MUNICIPAL)
+  para municípios).
 """
 function _projection_setup(q; fetch = _live_fetch, config = nothing)
-    strata = _strata_queries(q)
     prev = _previous_round(q; config)
+    prev_total = prev === nothing ? nothing : something(_fetch_all([prev]; fetch), [nothing])[1]
+    none = (strata = nothing, residual = false, previous = nothing, previous_total = prev_total,
+            params = PROJECTION_PARAMS_MUNICIPAL)
+
+    if q.cargo == OFFICES.president && q.uf == "BR"
+        strata = [_uf_query(q, u) for u in UFS if u != "BR"]
+        previous = prev === nothing ? nothing : _fetch_all([_uf_query(prev, s.uf) for s in strata]; fetch)
+        return (strata = strata, residual = false, previous, previous_total = prev_total, params = PROJECTION_PARAMS)
+    end
+
+    (q.cargo in _STATEWIDE_OFFICES && q.cd_municipio === nothing && q.uf != "BR") || return none
+    muns = municipalities(; uf = q.uf, verbose = false)
+    nrow(muns) >= 2 || return none
+    # O tamanho de cada município vem do turno anterior, se houver (arquivos
+    # finais, baixados uma vez), senão da própria eleição.
+    sized = _fetch_all([_mun_query(something(prev, q), m) for m in eachrow(muns)]; fetch)
+    sized === nothing && return none
+    order = sortperm([metadata(d, "eleitorado") for d in sized]; rev = true)
+    k = min(MAX_MUNICIPAL_STRATA[], nrow(muns))
+    chosen = order[1:k]
+    residual = k < nrow(muns)
+    strata = [_mun_query(q, muns[i, :]) for i in chosen]
     previous = if prev === nothing
         nothing
-    elseif strata === nothing
-        _fetch_all([prev]; fetch)
     else
-        _fetch_all([merge(s, (url = _live_results_url(prev.ciclo, prev.cd_eleicao, q.cargo, lowercase(s.uf), nothing),))
-                    for s in strata]; fetch)
+        parts = sized[chosen]
+        residual ? vcat(parts, [_residual(prev_total, parts)]) : parts
     end
-    (strata = strata, previous = previous)
+    (strata = strata, residual, previous, previous_total = prev_total, params = PROJECTION_PARAMS_MUNICIPAL)
+end
+
+"""
+    _projection_inputs(setup, total; fetch) -> (strata, previous)
+
+Busca os estratos de agora e devolve o que passar a [`projection`](@ref). Se
+algum estrato não puder ser buscado, o local vira um bloco só, com o turno
+anterior do local todo como referência.
+"""
+function _projection_inputs(setup, total; fetch = _live_fetch)
+    parts = setup.strata === nothing ? nothing : _fetch_all(setup.strata; fetch)
+    if parts !== nothing
+        get(setup, :residual, false) && (parts = vcat(parts, [_residual(total, parts)]))
+        return (strata = parts, previous = setup.previous, params = get(setup, :params, PROJECTION_PARAMS))
+    end
+    prev_total = get(setup, :previous_total, nothing)
+    previous = prev_total !== nothing ? [prev_total] :
+               setup.strata === nothing ? setup.previous : nothing   # bloco só: o turno anterior dele
+    # Bloco só (sem estratos, ou com um que falhou): os parâmetros mais cautelosos.
+    (strata = nothing, previous, params = PROJECTION_PARAMS_MUNICIPAL)
 end
 
 """
@@ -409,9 +510,11 @@ Busca o resultado atual na Divulgação de Resultados do TSE (como
 projetado, chance de vitória e o que já está matematicamente garantido.
 
 Na eleição presidencial do Brasil todo, a projeção é feita por UF (são 28
-consultas a mais), e num 2º turno usa o 1º turno de cada UF como
-referência. Nos demais casos, o local é um bloco só (com o 1º turno do local,
-num 2º turno).
+consultas a mais); num cargo disputado numa UF (Governador, Senador, ou
+Presidente numa UF), por município — os `MAX_MUNICIPAL_STRATA` (60) maiores, e
+o resto da UF como um bloco. Num 2º turno, cada parte parte do seu 1º turno.
+Prefeito, ou um município pedido, é um bloco só. A primeira chamada para um
+local baixa também o turno anterior de cada parte (arquivos finais).
 
 ```julia
 live_projection()                        # Presidente
@@ -426,12 +529,5 @@ function live_projection(office::Union{Symbol,Integer} = :president;
     q = _live_query(office; uf, municipality, election)
     verbose && @info "Consultando a Divulgação de Resultados do TSE" eleicao = q.eleicao url = q.url
     df = _live_fetch(q)
-    setup = _projection_setup(q)
-    strata = setup.strata === nothing ? nothing : _fetch_all(setup.strata)
-    previous = setup.previous
-    # Sem estratos (ou se algum falhou), o 1º turno do local todo.
-    if strata === nothing && setup.strata !== nothing
-        previous = nothing
-    end
-    projection(df; strata, previous, nsims)
+    projection(df; _projection_inputs(_projection_setup(q), df)..., nsims)
 end
