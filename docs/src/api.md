@@ -37,6 +37,10 @@ municipalities
 
 ```@docs
 live_results
+clinched
+projection
+live_projection
+BRElections.PROJECTION_PARAMS
 ```
 
 ## Códigos

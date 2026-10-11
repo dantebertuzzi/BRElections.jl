@@ -7,8 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `clinched`: who is already mathematically elected, or guaranteed in the
+  runoff, in the worst case for the uncounted electorate.
+- `projection` and `live_projection`: projected result, 80% range and chance
+  of winning (and of reaching the runoff), by simulating the votes still to be
+  counted. For the president, by state — each state's remaining votes follow
+  its own profile and remaining electorate, which captures states that count
+  late —, and in a runoff starting from each state's first round, shifted by
+  the swing already observed. Calibrated on count replays from the 2026 first
+  round (`BRElections.PROJECTION_PARAMS`).
+- `live_results` metadata: `cd_cargo` and `dt_eleicao`.
+
 ### Fixed
 
+- `live_results` marked candidates going to the runoff as `eleito = true`: the
+  TSE sets the "elected" flag for them too. Only elected candidates are
+  `true` now.
 - Reading several files (a national dataset for several states, for example)
   could produce `Any` columns when a column was a number in one file and text
   in another; they now become text, as when stacking several years.
@@ -19,6 +35,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `live_results` keeps the last version of each result in memory and
+  revalidates it with the TSE (ETag) on every call: polling no longer
+  downloads unchanged data.
+- `filter` can use columns not listed in `columns`: they are read for the
+  filter and left out of the result. `columns = [:nm_votavel], filter = row ->
+  row.nr_turno == 1` used to fail because `nr_turno` had not been read. The
+  columns are found by running the predicate on the first rows of the file, at
+  no measurable cost.
+- Files too large to read whole (with `filter`) are now read in several parts
+  at once, up to `ntasks`, instead of one at a time: the 2022 national
+  `candidate_votes` (4.1 GB) filtered in 55 s now takes 20 s with 4 threads and
+  14 s with 16. Start Julia with threads (`julia -t auto`) to benefit; with a
+  single thread the time is unchanged. Results are identical.
 - `filter` can use columns not listed in `columns`: they are read for the
   filter and left out of the result. `columns = [:nm_votavel], filter = row ->
   row.nr_turno == 1` used to fail because `nr_turno` had not been read. The

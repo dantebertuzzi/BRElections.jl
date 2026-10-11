@@ -31,20 +31,31 @@ _live_results_url(ciclo, ele, cargo, uf, mun) =
     (mun === nothing ? "" : lpad(mun, 5, '0')) *
     "-c$(lpad(cargo, 4, '0'))-e$(lpad(ele, 6, '0'))-u.json"
 
-# Resultados mudam a cada minuto durante a apuração: nunca vão para o cache.
+# Resultados mudam a cada minuto durante a apuração: nunca vão para o cache em
+# disco. Em memória fica a última versão de cada URL com o seu ETag, e cada
+# consulta pergunta ao TSE se ela mudou (HTTP 304, sem corpo, quando não):
+# quem acompanha a apuração consulta a cada poucos segundos sem baixar nada à
+# toa, e ainda assim recebe cada versão nova assim que o TSE a publica.
+const _LIVE_CACHE = Dict{String,Tuple{String,Any}}()
+const _LIVE_LOCK = ReentrantLock()
+
 function _fetch_live_json(url)
+    cached = lock(() -> get(_LIVE_CACHE, url, nothing), _LIVE_LOCK)
+    headers = cached === nothing ? Pair{String,String}[] : ["If-None-Match" => cached[1]]
     buf = IOBuffer()
-    try
-        Downloads.download(url, buf; timeout = 60)
-    catch e
-        if e isa Downloads.RequestError && e.response.status in (403, 404)
-            throw(ArgumentError(
-                "Sem resultado publicado no TSE para esta consulta (HTTP $(e.response.status)): $url. " *
-                "Confira se o cargo está em disputa nesse local e nessa eleição."))
-        end
-        rethrow()
+    resp = Downloads.request(url; output = buf, headers, timeout = 60, throw = false)
+    resp isa Downloads.Response || throw(resp)          # falha de rede
+    resp.status == 304 && cached !== nothing && return cached[2]
+    if resp.status in (403, 404)
+        throw(ArgumentError(
+            "Sem resultado publicado no TSE para esta consulta (HTTP $(resp.status)): $url. " *
+            "Confira se o cargo está em disputa nesse local e nessa eleição."))
     end
-    JSON.parse(String(take!(buf)))
+    200 <= resp.status < 300 || error("A Divulgação de Resultados do TSE respondeu HTTP $(resp.status): $url")
+    data = JSON.parse(String(take!(buf)))
+    i = findfirst(h -> lowercase(first(h)) == "etag", resp.headers)
+    i === nothing || lock(() -> (_LIVE_CACHE[url] = (last(resp.headers[i]), data)), _LIVE_LOCK)
+    data
 end
 
 _toint(x) = x === nothing || isempty(x) ? 0 : parse(Int, x)
@@ -70,7 +81,8 @@ function _parse_live_results(data)
             nm_agremiacao      = _nonempty(get(agr, "nm", nothing)),
             qt_votos           = _toint(c["vap"]),
             pc_votos           = _tofloat(get(c, "pvapn", c["pvap"])),
-            eleito             = get(c, "e", "n") == "s",
+            # O TSE marca com "e" = "s" também quem vai ao 2º turno.
+            eleito             = get(c, "e", "n") == "s" && !occursin("turno", get(c, "st", "")),
             ds_situacao        = _nonempty(get(c, "st", nothing)),
             ds_destinacao_voto = _nonempty(get(c, "dvt", nothing)),
             sq_candidato       = String(c["sqcand"]),
@@ -83,6 +95,7 @@ function _parse_live_results(data)
     total = _toint(v["tv"])
     meta = (
         "cargo"                 => String(carg["nmn"]),
+        "cd_cargo"              => _toint(carg["cd"]),
         "vagas"                 => _toint(carg["nv"]),
         "abrangencia"           => uppercase(data["cdabr"]),
         "atualizado_em"         => DateTime("$(data["dg"]) $(data["hg"])", dateformat"dd/mm/yyyy HH:MM:SS"),
@@ -127,7 +140,9 @@ _empty_live_results() = DataFrame(
 Resultado da apuração direto da Divulgação de Resultados do TSE
 (`resultados.tse.jus.br`), a fonte do site e do app "Resultados". Durante a
 apuração os números mudam a cada poucos minutos, e cada chamada busca a
-versão mais recente — nada é guardado em cache. Depois da totalização, a
+versão mais recente: nada vai para o cache em disco, e a última versão fica
+só em memória, revalidada no TSE a cada chamada (sem baixar de novo o que não
+mudou). Depois da totalização, a
 função continua servindo para consultar eleições recentes.
 
 # Argumentos
@@ -149,11 +164,11 @@ função continua servindo para consultar eleições recentes.
 Um `DataFrame` com uma linha por candidato, em ordem decrescente de votos:
 `nr_candidato`, `nm_urna_candidato`, `nm_candidato`, `sg_partido`,
 `nm_agremiacao` (coligação/federação), `qt_votos`, `pc_votos` (% dos votos
-válidos), `eleito`, `ds_situacao` (`"Eleito"`, `"2º turno"`, ... — `missing`
+válidos), `eleito` (só eleitos — quem vai ao 2º turno tem `false`), `ds_situacao` (`"Eleito"`, `"2º turno"`, ... — `missing`
 enquanto a apuração não define), `ds_destinacao_voto` e `sq_candidato`.
 
 O resumo da apuração fica nos metadados (`metadata(df)`): `eleicao`,
-`cd_eleicao`, `cargo`, `vagas`, `abrangencia`, `atualizado_em`,
+`cd_eleicao`, `dt_eleicao`, `cargo`, `cd_cargo`, `vagas`, `abrangencia`, `atualizado_em`,
 `totalizacao_final`, `secoes`, `secoes_totalizadas`,
 `pc_secoes_totalizadas`, `eleitorado`, `eleitorado_apurado`,
 `comparecimento`, `abstencao`, `pc_comparecimento`, `pc_abstencao`,
@@ -178,6 +193,18 @@ function live_results(office::Union{Symbol,Integer};
                       municipality::Union{Nothing,Integer,AbstractString} = nothing,
                       election::Union{Nothing,Integer,AbstractString} = nothing,
                       verbose::Bool = true)
+    q = _live_query(office; uf, municipality, election)
+    verbose && @info "Consultando a Divulgação de Resultados do TSE" eleicao = q.eleicao url = q.url
+    _live_fetch(q)
+end
+
+# A consulta já resolvida (eleição, município e URL), separada da busca dos
+# números: quem acompanha a apuração resolve uma vez — o que consulta o
+# catálogo e a lista de municípios — e depois só baixa o JSON de resultados.
+function _live_query(office::Union{Symbol,Integer};
+                     uf::Union{Nothing,AbstractString} = nothing,
+                     municipality::Union{Nothing,Integer,AbstractString} = nothing,
+                     election::Union{Nothing,Integer,AbstractString} = nothing)
     cargo = _office_code(office)
     u = uf === nothing ? (cargo == OFFICES.president ? "BR" : nothing) : validate_uf(uf)
     u === nothing && throw(ArgumentError(
@@ -207,13 +234,18 @@ function live_results(office::Union{Symbol,Integer};
 
     url = _live_results_url(ele.ciclo, ele.ele, cargo, lowercase(u),
                             mun === nothing ? nothing : mun.cd_municipio)
-    verbose && @info "Consultando a Divulgação de Resultados do TSE" eleicao = ele.nome url
-    df = _parse_live_results(_fetch_live_json(url))
+    (url = url, eleicao = ele.nome, cd_eleicao = parse(Int, ele.ele), ciclo = ele.ciclo, dt = ele.dt,
+     cargo = cargo, uf = u, cd_municipio = mun === nothing ? nothing : mun.cd_municipio,
+     abrangencia = mun === nothing ? nothing : "$(mun.nm_municipio) - $(mun.sg_uf)")
+end
 
-    metadata!(df, "eleicao", ele.nome; style = :note)
-    metadata!(df, "cd_eleicao", parse(Int, ele.ele); style = :note)
-    metadata!(df, "url", url; style = :note)
-    mun === nothing ||
-        metadata!(df, "abrangencia", "$(mun.nm_municipio) - $(mun.sg_uf)"; style = :note)
+function _live_fetch(q)
+    df = _parse_live_results(_fetch_live_json(q.url))
+    metadata!(df, "eleicao", q.eleicao; style = :note)
+    metadata!(df, "cd_eleicao", q.cd_eleicao; style = :note)
+    metadata!(df, "dt_eleicao", q.dt; style = :note)
+    metadata!(df, "url", q.url; style = :note)
+    q.abrangencia === nothing || metadata!(df, "abrangencia", q.abrangencia; style = :note)
     df
 end
+

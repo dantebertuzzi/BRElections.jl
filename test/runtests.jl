@@ -862,6 +862,135 @@ end
         @test_throws ArgumentError live_results(:governor; uf = "XX")
     end
 
+    @testset "live_results — quem vai ao 2º turno não é 'eleito'" begin
+        cand(n, e, st) = """{ "n" : "$n", "sqcand" : "$n", "nm" : "C$n", "nmu" : "C$n", "dvt" : "Válido",
+                              "e" : "$e", "st" : "$st", "vap" : "$(100 - n)", "pvap" : "1,0" }"""
+        data = BRElections.JSON.parse("""
+            { "cdabr" : "br", "dg" : "05/10/2026", "hg" : "20:00:00", "tf" : "s",
+              "s" : { "ts" : "1", "st" : "1", "pst" : "100,00" },
+              "e" : { "te" : "10", "est" : "10", "c" : "9", "pc" : "90,00", "a" : "1", "pa" : "10,00" },
+              "v" : { "tv" : "9", "vv" : "9", "vb" : "0", "pvb" : "0,00", "tvn" : "0", "ptvn" : "0,00" },
+              "carg" : [ { "cd" : "1", "nmn" : "Presidente", "nv" : "1", "agr" : [ { "par" : [ { "sg" : "P",
+                "cand" : [ $(cand(1, "s", "2º turno")), $(cand(2, "s", "2º turno")),
+                           $(cand(3, "n", "Não eleito")), $(cand(4, "s", "Eleito")) ] } ] } ] } ] }
+            """)
+        df = BRElections._parse_live_results(data)
+        @test df.eleito == [false, false, false, true]
+        @test metadata(df, "cd_cargo") == 1
+    end
+
+    # Resultado no formato de `live_results`, para os testes de projeção.
+    function fake_live(votes::AbstractVector{<:Integer}; nr = collect(1:length(votes)), cargo = 1, vagas = 1,
+                       eleitorado = 1000, apurado = eleitorado, eleicao = "Eleição - 1º Turno",
+                       anulado = falses(length(votes)), abrangencia = "BR",
+                       at = DateTime(2026, 10, 25, 18))
+        df = DataFrame(nr_candidato = nr, nm_urna_candidato = ["C$i" for i in nr], nm_candidato = ["C$i" for i in nr],
+                       sg_partido = ["P$i" for i in nr], nm_agremiacao = Union{Missing,String}[missing for _ in nr],
+                       qt_votos = votes, pc_votos = 100 .* votes ./ max(sum(votes), 1), eleito = falses(length(votes)),
+                       ds_situacao = Union{Missing,String}[missing for _ in nr],
+                       ds_destinacao_voto = Union{Missing,String}[a ? "Anulado sub judice" : "Válido" for a in anulado],
+                       sq_candidato = string.(nr))
+        valid = sum(votes[.!anulado])
+        for (k, v) in ("cargo" => "X", "cd_cargo" => cargo, "vagas" => vagas, "eleicao" => eleicao,
+                       "abrangencia" => abrangencia, "eleitorado" => eleitorado, "eleitorado_apurado" => apurado,
+                       "votos_validos" => valid, "votos" => sum(votes), "totalizacao_final" => apurado == eleitorado,
+                       "atualizado_em" => at, "pc_secoes_totalizadas" => 100apurado / eleitorado,
+                       "secoes" => 100, "secoes_totalizadas" => round(Int, 100apurado / eleitorado),
+                       "comparecimento" => sum(votes), "abstencao" => max(apurado - sum(votes), 0),
+                       "pc_comparecimento" => 100 * sum(votes) / max(apurado, 1),
+                       "pc_abstencao" => 100 * max(apurado - sum(votes), 0) / max(apurado, 1),
+                       "votos_brancos" => 0, "votos_nulos" => 0, "pc_votos_validos" => 100.0,
+                       "pc_votos_brancos" => 0.0, "pc_votos_nulos" => 0.0)
+            metadata!(df, k, v; style = :note)
+        end
+        df
+    end
+
+    @testset "clinched — eleito e 2º turno garantidos pela matemática" begin
+        # maioria absoluta: 600 > (800 + 0)/2 com tudo apurado
+        @test clinched(fake_live([600, 150, 50])) == [:elected, :open, :open]
+        # falta apurar 300 eleitores: 600 > (800 + 300)/2 = 550 → eleito mesmo assim
+        @test clinched(fake_live([600, 150, 50]; eleitorado = 1100, apurado = 800))[1] === :elected
+        # com 500 faltando, o pior caso tira a maioria (600 < 650), mas ninguém mais
+        # pode passar de 50% nem o 3º alcançá-lo: o 2º turno está garantido
+        @test clinched(fake_live([600, 150, 50]; eleitorado = 1300, apurado = 800)) == [:runoff, :open, :open]
+        # ninguém chega a 50% nem pode chegar; o 3º não alcança o 2º → os dois no 2º turno
+        @test clinched(fake_live([400, 350, 250]; eleitorado = 1010, apurado = 1000)) == [:runoff, :runoff, :open]
+        # se alguém ainda pode passar de 50%, não há 2º turno garantido para ninguém
+        @test clinched(fake_live([400, 350, 250]; eleitorado = 1300, apurado = 1000)) == [:open, :open, :open]
+        # maioria simples (senado, 2 vagas): os dois primeiros, se o 3º não os alcança
+        sen = fake_live([500, 400, 100]; cargo = 5, vagas = 2, eleitorado = 1100, apurado = 1000)
+        @test clinched(sen) == [:elected, :elected, :open]
+        @test clinched(fake_live([500, 400, 100]; cargo = 5, vagas = 2, eleitorado = 1300, apurado = 1000)) ==
+              [:elected, :open, :open]
+        # 2º turno: maioria simples entre os dois
+        @test clinched(fake_live([520, 480]; eleicao = "Eleição - 2º Turno", eleitorado = 1030, apurado = 1000)) ==
+              [:elected, :open]
+        # prefeito em cidade com até 200 mil eleitores: maioria simples
+        @test clinched(fake_live([400, 350, 250]; cargo = 11))[1] === :elected
+        @test clinched(fake_live([400, 350, 250]; cargo = 11, eleitorado = 300_000, apurado = 300_000))[1] === :runoff
+        # cargos proporcionais: a vaga depende do quociente eleitoral
+        @test all(==(:open), clinched(fake_live([500, 10]; cargo = 6, vagas = 3)))
+        # candidatura anulada não é eleita nem conta como rival
+        @test clinched(fake_live([700, 600, 100]; cargo = 5, anulado = [true, false, false])) == [:open, :elected, :open]
+    end
+
+    @testset "projection — tendência e chance" begin
+        rng = BRElections.Random.Xoshiro(1)
+        # tudo apurado: sem incerteza
+        p = projection(fake_live([400, 350, 250]); rng, nsims = 500)
+        @test p.nr_candidato == [1, 2, 3]
+        @test p.pc_projetado ≈ [40, 35, 25] && p.pc_min ≈ p.pc_max
+        @test p.p_vitoria == [0, 0, 0] && p.p_segundo_turno == [1, 1, 0]
+        @test p.garantido == [:runoff, :runoff, :open]
+        @test metadata(p, "regra") == "majority" && metadata(p, "validos_restantes") == 0
+        @test size(metadata(p, "cenarios").pc) == (500, 3)
+
+        # no meio da apuração, as chances somam 1 (uma vaga, maioria simples)
+        mid = fake_live([520, 480]; eleicao = "2º Turno", eleitorado = 2000, apurado = 1000)
+        p = projection(mid; rng, nsims = 2000)
+        @test sum(p.p_vitoria) ≈ 1
+        @test p.p_vitoria[1] > 0.5 && all(ismissing, p.p_segundo_turno)
+        @test p.pc_min[1] < p.pc_projetado[1] < p.pc_max[1]
+
+        # Estado atrasado: o país apurado está 50,8% para o 1, mas tudo o que falta
+        # está num estado que, no que já apurou, vota 70% no 2.
+        a = fake_live([1100, 900]; eleicao = "2º Turno", eleitorado = 2000, apurado = 2000, abrangencia = "SP")
+        b = fake_live([120, 280]; eleicao = "2º Turno", eleitorado = 2000, apurado = 400, abrangencia = "BA")
+        nat = fake_live([1220, 1180]; eleicao = "2º Turno", eleitorado = 4000, apurado = 2400)
+        flat = projection(nat; rng)
+        strat = projection(nat; strata = [a, b], rng)
+        @test flat.nr_candidato[1] == 1                             # sem estratos, o 1 segue à frente
+        @test strat.nr_candidato[1] == 2                            # com eles, a virada aparece
+        @test strat.pc_projetado[1] > 51 && strat.p_vitoria[1] > 0.6
+        @test metadata(strat, "estratos") == 2
+
+        # 1º turno como referência: o estado que não apurou nada parte dele
+        b0 = fake_live([0, 0]; eleicao = "2º Turno", eleitorado = 2000, apurado = 0, abrangencia = "BA")
+        nat0 = fake_live([1100, 900]; eleicao = "2º Turno", eleitorado = 4000, apurado = 2000)
+        prev_a = fake_live([500, 400, 100]; nr = [1, 2, 3], abrangencia = "SP")
+        prev_b = fake_live([200, 700, 100]; nr = [1, 2, 3], abrangencia = "BA")
+        with_prev = projection(nat0; strata = [a, b0], previous = [prev_a, prev_b], rng)
+        without = projection(nat0; strata = [a, b0], rng)
+        pick(p, nr) = p.pc_projetado[p.nr_candidato .== nr][1]
+        @test pick(with_prev, 2) > pick(without, 2) + 5
+        @test metadata(with_prev, "usa_turno_anterior")
+        @test_throws ArgumentError projection(nat0; strata = [a, b0], previous = [prev_a])
+
+        # nada apurado e sem 1º turno: não há base
+        @test_throws ArgumentError projection(fake_live([0, 0]; eleitorado = 1000, apurado = 0))
+
+        # proporcional: projeta votos, não vagas
+        dep = projection(fake_live([500, 300, 200]; cargo = 6, vagas = 2, eleitorado = 2000, apurado = 1000); rng)
+        @test all(ismissing, dep.p_vitoria)
+
+        # Gama: média α
+        g = [BRElections._randgamma(rng, α) for α in (0.5, 3.0) for _ in 1:20_000]
+        @test sum(g[1:20_000]) / 20_000 ≈ 0.5 atol = 0.03
+        @test sum(g[20_001:end]) / 20_000 ≈ 3.0 atol = 0.1
+        @test BRElections.quantile_sorted([1.0, 2.0, 3.0, 4.0], 0.5) ≈ 2.5
+    end
+
     @testset "Prestação de contas e novos datasets — URLs e anos" begin
         @test dataset_url(:candidate_revenue, 2022) ==
               "https://cdn.tse.jus.br/estatistica/sead/odsele/prestacao_contas/prestacao_de_contas_eleitorais_candidatos_2022.zip"

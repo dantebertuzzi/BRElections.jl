@@ -25,7 +25,8 @@ authorisation is required.
   then;
 - TSE ↔ IBGE municipality code crosswalk (`municipalities`);
 - Live vote counting on election night, straight from the TSE's results system
-  (`live_results`);
+  (`live_results`), with a projection of the count (`projection`,
+  `live_projection`) and what is already mathematically decided (`clinched`);
 - Discovery of published files by year (`available_files`);
 - ZIP decompression with on-the-fly ISO-8859-1 → UTF-8 transcoding;
 - Efficient import of large CSVs (CSV.jl, multithreaded, chunk-based reading);
@@ -210,8 +211,10 @@ votes = leftjoin(votes, select(mun, :cd_municipio, :cd_municipio_ibge);
 The open-data files above are only published days after an election. On
 election night, `live_results` reads the TSE's results system
 (`resultados.tse.jus.br`, the source of its website and "Resultados" app), which
-is updated every few minutes while votes are counted. Nothing is cached. After
-the count, it keeps working for recent elections, by municipality too.
+is updated every few minutes while votes are counted. Nothing goes to the disk
+cache; the last version is kept in memory and revalidated (ETag) on every call,
+so polling is cheap. After the count, it keeps working for recent elections, by
+municipality too.
 
 ```julia
 pres = live_results(:president)                  # Brazil
@@ -234,6 +237,36 @@ that refreshes itself:
 ```bash
 julia --project=. examples/live_results.jl presidente --watch 60
 ```
+
+#### Projection: trend, win probability, clinched seats
+
+`clinched(df)` says, for each candidate, what the arithmetic already
+guarantees in the worst case (every voter still uncounted turns out and votes
+against them): `:elected`, `:runoff` (at least goes to the runoff) or `:open`.
+
+`live_projection` (or `projection` on data you already have) simulates the
+votes still to be counted and returns, per candidate, the projected share, an
+80% range, the chance of winning (outright, when a runoff is possible) and of
+reaching the runoff:
+
+```julia
+live_projection()                      # president
+live_projection(:governor; uf = "PE")
+```
+
+The count does not advance evenly: states finish at different times (the
+Northeast usually later), and the uncounted electorate does not vote like the
+counted one. For the presidential race the projection is done **by state**:
+each state's remaining votes follow that state's profile, weighted by how many
+voters are still uncounted there. In a **runoff**, a state that has counted
+little starts from its own first-round result, shifted by the swing already
+seen in the states that counted more (the transfer of the eliminated
+candidates' votes). The parameters (`BRElections.PROJECTION_PARAMS`) were set
+so that the 80% range holds the final result about 80% of the time in count
+replays built from the 2026 first round; in those replays the state-level
+projection is off by half as much as extrapolating the national total. It is a
+simple, transparent model with no polls: it shows where the count points, not
+what will happen.
 
 ### Cache
 
