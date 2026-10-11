@@ -249,3 +249,84 @@ function _live_fetch(q)
     df
 end
 
+"""
+    live_dashboard(office = :president; uf = nothing, municipality = nothing,
+                   election = nothing, interval = 10, demo = false)
+
+Dashboard no terminal para acompanhar a apuração ao vivo, com os dados de
+[`live_results`](@ref) e a tendência de [`projection`](@ref). Duas telas,
+alternadas com `Tab`:
+
+- **Apuração** — candidatos com votos, barras, resultado projetado, faixa de
+  80% e chance de vitória (no 1º turno e de ir ao 2º, quando há 2º turno);
+  quem já está **matematicamente eleito** ou garantido no 2º turno
+  ([`clinched`](@ref)); seções totalizadas, comparecimento, válidos,
+  brancos, nulos e quanto falta apurar; o andamento por região (quanto já
+  foi apurado e quanto do que falta no país está lá); e a diferença entre o
+  1º e o 2º ao longo da apuração, com a diferença projetada.
+- **Análise** — chance de cada candidato; a distribuição dos cenários
+  simulados contra o corte que decide a eleição (50% dos válidos, ou a
+  última vaga); de quanto do que falta cada um precisa para virar ou vencer
+  no 1º turno; a chance do líder ao longo da apuração; e as UFs ordenadas
+  pelo peso do que falta apurar nelas.
+
+Na eleição presidencial do Brasil todo, a tendência é calculada por UF, e
+num 2º turno parte do 1º turno de cada UF (veja [`projection`](@ref)).
+
+**Tempo real.** O TSE não publica votos um a um: cada urna envia o boletim
+da seção inteira, e o TSE republica o resultado agregado conforme os boletins
+chegam (com até cerca de um minuto de cache no CDN). O painel consulta a cada
+`interval` segundos, só baixando quando há versão nova (ETag); quando ela
+chega, os contadores rolam até os números novos (efeito odômetro) em vez de
+saltar — sem nunca passar do último número publicado. O cabeçalho mostra o
+ritmo da apuração (votos e seções por minuto) e o horário estimado de
+término nesse ritmo.
+
+Precisa do [Tachikoma.jl](https://github.com/kahliburke/Tachikoma.jl), que
+não é dependência do pacote: carregue-o antes (`using Tachikoma`).
+
+Os argumentos são os de [`live_results`](@ref); `interval` é o intervalo, em
+segundos, entre as consultas ao TSE (no mínimo 5). Depois da totalização
+final, o painel deixa de consultar sozinho — `r` ainda força uma consulta.
+
+**Demonstração.** Com `demo = true`, o painel reconstitui a apuração da
+eleição presidencial mais recente a partir do resultado final real por UF,
+comprimida em cerca de 3 minutos: cada UF começa e avança no seu ritmo (o
+Nordeste mais tarde), e o que é apurado primeiro vem enviesado. Os números
+intermediários são simulados — o título avisa —; os finais são os do TSE.
+Serve para ver o painel funcionando fora do dia da eleição.
+
+# Teclas
+
+| Tecla                 | Ação                                        |
+|:----------------------|:--------------------------------------------|
+| `Tab` `a`             | alterna entre apuração e análise            |
+| `←` `→`               | cargo anterior / seguinte                   |
+| `u`                   | trocar a UF (vazio = Brasil)                |
+| `m`                   | trocar o município (vazio = a UF inteira)   |
+| `r`                   | consultar agora                             |
+| `↑` `↓` `PgUp` `PgDn` | rolar a lista de candidatos                 |
+| `q` `Esc`             | sair                                        |
+
+# Exemplo
+
+```julia
+using BRElections, Tachikoma
+live_dashboard()                                  # Presidente, Brasil
+live_dashboard(:governor; uf = "SP", interval = 60)
+live_dashboard(:mayor; uf = "PE", municipality = "Recife")
+live_dashboard(demo = true)                       # apuração simulada, ~3 minutos
+```
+"""
+function live_dashboard(office::Union{Symbol,Integer} = :president;
+                        uf::Union{Nothing,AbstractString} = nothing,
+                        municipality::Union{Nothing,Integer,AbstractString} = nothing,
+                        election::Union{Nothing,Integer,AbstractString} = nothing,
+                        interval::Real = 10, demo::Bool = false)
+    _office_code(office)                  # erro de uso antes de abrir o painel
+    ext = Base.get_extension(@__MODULE__, :BRElectionsTachikomaExt)
+    ext === nothing && error("`live_dashboard` precisa do Tachikoma.jl. Carregue-o antes:\n" *
+                             "  using Tachikoma\n" *
+                             "Se não estiver instalado: using Pkg; Pkg.add(\"Tachikoma\")")
+    ext.dashboard(office; uf, municipality, election, interval = max(Float64(interval), 5.0), demo)
+end

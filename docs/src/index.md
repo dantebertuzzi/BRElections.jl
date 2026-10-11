@@ -29,7 +29,7 @@ Uma chamada como `candidates(2022; uf = "PE")` executa:
 pkg> add BRElections
 ```
 
-Requer Julia 1.9 ou superior.
+Requer Julia 1.10 ou superior.
 
 ## Exemplo completo
 

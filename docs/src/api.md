@@ -41,6 +41,7 @@ clinched
 projection
 live_projection
 BRElections.PROJECTION_PARAMS
+live_dashboard
 ```
 
 ## Códigos

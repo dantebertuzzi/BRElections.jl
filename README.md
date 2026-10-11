@@ -26,7 +26,8 @@ authorisation is required.
 - TSE ↔ IBGE municipality code crosswalk (`municipalities`);
 - Live vote counting on election night, straight from the TSE's results system
   (`live_results`), with a projection of the count (`projection`,
-  `live_projection`) and what is already mathematically decided (`clinched`);
+  `live_projection`), what is already mathematically decided (`clinched`) and
+  a terminal dashboard (`live_dashboard`);
 - Discovery of published files by year (`available_files`);
 - ZIP decompression with on-the-fly ISO-8859-1 → UTF-8 transcoding;
 - Efficient import of large CSVs (CSV.jl, multithreaded, chunk-based reading);
@@ -45,7 +46,7 @@ authorisation is required.
 pkg> add BRElections
 ```
 
-Requires Julia 1.9 or later. Start Julia with threads (`julia -t auto`): large
+Requires Julia 1.10 or later. Start Julia with threads (`julia -t auto`): large
 files are read in parallel, which for the biggest TSE files cuts the time by
 a factor of 3 or more.
 
@@ -267,6 +268,44 @@ replays built from the 2026 first round; in those replays the state-level
 projection is off by half as much as extrapolating the national total. It is a
 simple, transparent model with no polls: it shows where the count points, not
 what will happen.
+
+#### Terminal dashboard
+
+`live_dashboard` (needs [Tachikoma.jl](https://github.com/kahliburke/Tachikoma.jl),
+loaded with `using Tachikoma`) puts all of this in a terminal dashboard with two
+screens, switched with `Tab`: the **count** (candidates with votes, bars,
+projection, range, win and runoff chances, clinched marks, turnout, regions
+with how much of the remaining electorate is there, the lead over time) and the
+**analysis** (chance bars, the distribution of simulated outcomes against the
+deciding cut — 50% or the last seat —, the share of the remaining votes each
+candidate needs to overtake or win outright, the leader's chance over time, and
+the states ranked by the weight of what is left to count).
+
+The TSE does not publish votes one by one — each voting machine sends the
+whole section at once, and the aggregate is republished as reports arrive,
+with up to about a minute of CDN caching. The dashboard polls every few
+seconds (a 304 costs nothing), and when a new version arrives the counters roll
+to the new numbers like an odometer, never past the last published figure. The
+header shows the pace of the count (votes and sections per minute) and the
+estimated finish time.
+
+```julia
+using BRElections, Tachikoma
+live_dashboard()                                  # president, Brazil
+live_dashboard(:mayor; uf = "PE", municipality = "Recife")
+live_dashboard(demo = true)                       # simulated count, ~3 minutes
+```
+
+`demo = true` replays the latest presidential count from the real final
+results by state, compressed into about three minutes (the Northeast starting
+later, early returns skewed), to see the dashboard outside election day; the
+intermediate numbers are simulated and the title says so. The example script
+sets up Tachikoma in a temporary environment if you don't have it:
+
+```bash
+julia -t auto examples/live_dashboard.jl --demo
+julia -t auto examples/live_dashboard.jl governador sp
+```
 
 ### Cache
 

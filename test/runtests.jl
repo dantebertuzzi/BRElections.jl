@@ -991,6 +991,123 @@ end
         @test BRElections.quantile_sorted([1.0, 2.0, 3.0, 4.0], 0.5) ≈ 2.5
     end
 
+    @testset "live_dashboard — sem o Tachikoma, explica o que falta" begin
+        if Base.get_extension(BRElections, :BRElectionsTachikomaExt) === nothing
+            err = try live_dashboard(); catch e; e; end
+            @test err isa ErrorException && occursin("using Tachikoma", err.msg)
+        end
+        @test_throws ArgumentError live_dashboard(:vice_mayor)
+    end
+
+    @testset "live_dashboard — painel (Tachikoma, sem rede)" begin
+        @eval using Tachikoma
+        E = Base.get_extension(BRElections, :BRElectionsTachikomaExt)
+        @test E !== nothing
+        T = Base.invokelatest(() -> Tachikoma)
+
+        v1 = fake_live([550, 450, 100]; eleitorado = 2000, apurado = 1100, at = DateTime(2026, 10, 25, 18, 0))
+        v2 = fake_live([900, 700, 150]; eleitorado = 2000, apurado = 1750, at = DateTime(2026, 10, 25, 18, 5))
+        current = Ref{Any}(v1)
+        resolved = Ref(0)
+        m = E.Dashboard(; target = E.Target(:president, nothing, nothing, nothing),
+                        resolve = t -> (resolved[] += 1; (url = "x", uf = something(t.uf, "BR"))),
+                        fetch = q -> current[] isa Exception ? throw(current[]) : current[],
+                        prepare = q -> (strata = nothing, previous = nothing))
+        pump!(m) = begin
+            @test timedwait(() -> isready(m.tq.channel), 60.0) === :ok
+            Base.invokelatest(T.drain_tasks!, e -> Base.invokelatest(T.update!, m, e), m.tq)
+        end
+        key!(m, k) = Base.invokelatest(T.update!, m, k isa Char ? T.KeyEvent(k) : T.KeyEvent(k))
+        screen(m; w = 130, h = 40) = Base.invokelatest() do
+            buf = T.Buffer(T.Rect(1, 1, w, h))
+            T.view(m, T.Frame(buf, T.Rect(1, 1, w, h), T.GraphicsRegion[], T.PixelSnapshot[]))
+            join((String([buf.content[T.buf_index(buf, x, y)].char for x in 1:w]) for y in 1:h), "\n")
+        end
+
+        E.request!(m); pump!(m)
+        @test m.df === v1 && m.error === nothing && resolved[] == 1
+        @test m.proj !== nothing && metadata(m.proj, "regra") == "majority"
+        txt = screen(m)
+        @test occursin("C1", txt) && occursin("Proj.", txt) && occursin("1º t.", txt)
+        @test occursin("AO VIVO", txt) && occursin("Falta apurar", txt)
+
+        key!(m, :tab)
+        @test m.screen === :analysis
+        txt = screen(m)
+        @test occursin("o que falta", txt) && occursin("cenários", txt) && occursin("Para virar, C2", txt)
+        key!(m, :tab)
+
+        # Versão nova: mesma consulta (sem resolver de novo), histórico e odômetro.
+        current[] = v2
+        E.request!(m); pump!(m)
+        @test m.df === v2 && resolved[] == 1 && length(m.history) == 2
+        @test m.anim !== nothing
+        m.anim_start = time() - E.ANIM_SECONDS / 2
+        mid = E.animated(m)
+        @test 550 < mid.qt_votos[1] < 900                     # entre as duas versões reais
+        @test 1100 < metadata(mid, "eleitorado_apurado") < 1750
+        m.anim_start = time() - 2E.ANIM_SECONDS
+        @test E.animated(m) === v2 && m.anim === nothing      # nunca passa do número publicado
+        pace = E.pace(m)
+        @test pace.votes ≈ (1750 - 1100) / 5                  # votos por minuto entre 18:00 e 18:05
+        @test pace.eta !== nothing
+        @test occursin("ritmo", screen(m))
+
+        # Falha: mostra o erro e mantém os números na tela.
+        current[] = ArgumentError("Sem resultado publicado")
+        E.request!(m); pump!(m)
+        @test m.error == "Sem resultado publicado" && m.df === v2
+        txt = screen(m)
+        @test occursin("Sem resultado publicado", txt) && occursin("C1", txt)
+
+        # Resposta de uma consulta superada é ignorada.
+        E.receive!(m, (gen = m.generation - 1, target = m.target, query = nothing, setup = nothing,
+                       df = v1, strata = nothing, proj = nothing, error = nothing))
+        @test m.df === v2
+
+        # Trocar a UF pelo teclado: resolve de novo, zera o histórico.
+        current[] = v1
+        key!(m, 'u'); @test m.input === :uf
+        foreach(c -> key!(m, c), "pe")
+        key!(m, :enter); pump!(m)
+        @test m.target.uf == "PE" && resolved[] == 2 && length(m.history) == 1 && m.error === nothing
+        key!(m, 'm'); key!(m, :escape)
+        @test m.input === nothing && m.target.municipality === nothing
+
+        # Cargo que exige UF/município: o painel pergunta antes de consultar.
+        m.target = E.Target(:president, nothing, nothing, nothing)
+        key!(m, :right)
+        @test m.input === :uf && m.pending.office === :governor && m.target.office === :president
+        foreach(c -> key!(m, c), "sp"); key!(m, :enter); pump!(m)
+        @test m.target == E.Target(:governor, "SP", nothing, nothing) && m.pending === nothing
+        key!(m, :left)                                    # volta a Presidente, com SP
+        pump!(m)
+        @test m.target.office === :president && m.target.uf == "SP"
+        m.target = E.Target(:president, nothing, nothing, nothing)
+        key!(m, :left)                                    # Vereador: UF e depois município
+        @test m.input === :uf
+        foreach(c -> key!(m, c), "pe"); key!(m, :enter)
+        @test m.input === :municipality && m.pending.uf == "PE"
+        foreach(c -> key!(m, c), "Recife"); key!(m, :enter); pump!(m)
+        @test m.target == E.Target(:councillor, "PE", "Recife", nothing)
+        m.target = E.Target(:president, nothing, nothing, nothing)
+        key!(m, :right); key!(m, :escape)                 # desistir no prompt não muda nada
+        @test m.input === nothing && m.pending === nothing && m.target.office === :president && !m.quit
+
+        @test E.cycle_office(:president, -1) === :councillor && E.cycle_office(:president, 1) === :governor
+        @test E.fmtint(1234567) == "1.234.567" && E.fmtint(-5) == "-5"
+        @test E.fmtpct(12.346) == "12,35%" && E.fmtpct(3.0; digits = 1, suffix = " p.p.") == "3,0 p.p."
+        @test E.fmtchance(0.999) == ">99%" && E.fmtchance(0.001) == "<1%" && E.fmtchance(0.5) == "50%"
+        @test E.fmtchance(missing) == "–"
+        @test E.fmtqty(1.26e6) == "1,3 mi" && E.fmtqty(41_000) == "41 mil"
+        @test E.clip("ABCDEFGH", 5) == "ABCD…"
+
+        # Terminal estreito: as colunas opcionais somem, o painel não quebra.
+        @test occursin("C1", screen(m; w = 70, h = 24))
+        key!(m, 'q')
+        @test m.quit
+    end
+
     @testset "Prestação de contas e novos datasets — URLs e anos" begin
         @test dataset_url(:candidate_revenue, 2022) ==
               "https://cdn.tse.jus.br/estatistica/sead/odsele/prestacao_contas/prestacao_de_contas_eleitorais_candidatos_2022.zip"

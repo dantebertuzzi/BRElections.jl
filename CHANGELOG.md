@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `live_dashboard`: a terminal dashboard for election night, built on
+  Tachikoma.jl (a package extension — load it with `using Tachikoma`). Two
+  screens: the count (candidates, projection, win/runoff chances, clinched
+  marks, turnout, regions, lead over time) and the analysis (chance bars,
+  distribution of simulated outcomes against the deciding cut, what each
+  candidate needs from the remaining votes, the leader's chance over time,
+  states ranked by the weight of what is left). Counters roll to each new
+  version like an odometer; the header shows the pace of the count and the
+  estimated finish. `demo = true` replays the latest presidential count from
+  the real final results by state, in about three minutes.
+  `examples/live_dashboard.jl` runs it, setting Tachikoma up in a temporary
+  environment if needed.
 - `clinched`: who is already mathematically elected, or guaranteed in the
   runoff, in the worst case for the uncounted electorate.
 - `projection` and `live_projection`: projected result, 80% range and chance
@@ -35,19 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Requires Julia 1.10 (the current LTS); 1.9 is no longer supported.
 - `live_results` keeps the last version of each result in memory and
   revalidates it with the TSE (ETag) on every call: polling no longer
   downloads unchanged data.
-- `filter` can use columns not listed in `columns`: they are read for the
-  filter and left out of the result. `columns = [:nm_votavel], filter = row ->
-  row.nr_turno == 1` used to fail because `nr_turno` had not been read. The
-  columns are found by running the predicate on the first rows of the file, at
-  no measurable cost.
-- Files too large to read whole (with `filter`) are now read in several parts
-  at once, up to `ntasks`, instead of one at a time: the 2022 national
-  `candidate_votes` (4.1 GB) filtered in 55 s now takes 20 s with 4 threads and
-  14 s with 16. Start Julia with threads (`julia -t auto`) to benefit; with a
-  single thread the time is unchanged. Results are identical.
+
 - `filter` can use columns not listed in `columns`: they are read for the
   filter and left out of the result. `columns = [:nm_votavel], filter = row ->
   row.nr_turno == 1` used to fail because `nr_turno` had not been read. The
