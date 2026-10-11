@@ -4,6 +4,7 @@ using DataFrames
 using Dates
 using StringEncodings
 using ZipFile
+using Sockets
 
 # Cache isolado para os testes.
 BRElections.set_cache_dir!(mktempdir())
@@ -469,6 +470,18 @@ end
         @test df.nr_cpf_candidato[2] == "01234567890"
     end
 
+    @testset "read_tse_csvs — tipos incompatíveis entre arquivos viram texto, não Any" begin
+        dir = mktempdir()
+        pe = joinpath(dir, "x_PE.csv")
+        pb = joinpath(dir, "x_PB.csv")
+        write(pe, "SG_UF;CD_X;QT\n\"PE\";\"1\";\"10\"\n")
+        write(pb, "SG_UF;CD_X;QT\n\"PB\";\"A1\";\"2.5\"\n")
+        df = BRElections.read_tse_csvs([pe, pb])
+        @test eltype(df.cd_x) == String
+        @test df.cd_x == ["1", "A1"]
+        @test eltype(df.qt) == Float64                 # números: promovidos
+    end
+
     @testset "select_csvs — uf insensível a caixa" begin
         dir = mktempdir()
         zippath = make_fixture_zip(dir; per_uf = true)
@@ -748,7 +761,9 @@ end
                 { "cd" : "6257", "nm" : "Federal 1T", "abr" : [ { "cd" : "br", "cp" : [ { "cd" : "1" } ] } ] },
                 { "cd" : "6259", "nm" : "Estadual 1T", "abr" : [ { "cd" : "br", "cp" : [ { "cd" : "3" }, { "cd" : "5" } ] } ] } ] },
               { "c" : "ele2026", "dt" : "25/10/2026", "e" : [
-                { "cd" : "6258", "nm" : "Federal 2T", "abr" : [ { "cd" : "br", "cp" : [ { "cd" : "1" } ] } ] } ] } ] }
+                { "cd" : "6258", "nm" : "Federal 2T", "abr" : [ { "cd" : "br", "cp" : [ { "cd" : "1" } ] } ] },
+                { "cd" : "6260", "nm" : "Estadual 2T", "abr" : [ { "cd" : "am", "cp" : [ { "cd" : "3" } ] },
+                                                                { "cd" : "rn", "cp" : [ { "cd" : "3" } ] } ] } ] } ] }
             """)
         find(cargo; kw...) = BRElections._find_election(config, cargo; kw...).ele
         dia = Date(2026, 10, 4)
@@ -767,6 +782,18 @@ end
         @test find(3; uf = "PE", today = Date(2026, 7, 1)) == "6259"   # única, embora futura
         @test find(13; uf = "SP", municipality = 71072, today = dia) == "619"   # vereador não teve 2º turno
         @test_throws ArgumentError BRElections._find_election(config, 99)
+        @test find(3; uf = "AM", today = Date(2026, 10, 25)) == "6260"
+        @test find(3; uf = "SP", today = Date(2026, 10, 25)) == "6259"   # sem 2º turno em SP
+
+        # Eleição dada vale como "este dia de votação": cargo de outra eleição do
+        # mesmo dia vai para a irmã; sem irmã que sirva, erro claro.
+        explicit(code, cargo, u) = BRElections._explicit_election(config, code, cargo, u, nothing).ele
+        @test explicit(6258, 1, "BR") == "6258"
+        @test explicit(6258, 3, "AM") == "6260"
+        @test explicit("6260", 1, "BR") == "6258"
+        @test explicit(6257, 3, "SP") == "6259"
+        @test_throws ArgumentError explicit(6258, 3, "SP")        # SP não tem 2º turno de governador
+        @test_throws ArgumentError explicit(9999, 1, "BR")
     end
 
     @testset "live_results — parsing (offline)" begin
@@ -850,6 +877,405 @@ end
         @test_throws ArgumentError live_results(:governor; uf = "XX")
     end
 
+    @testset "live_results — quem vai ao 2º turno não é 'eleito'" begin
+        cand(n, e, st) = """{ "n" : "$n", "sqcand" : "$n", "nm" : "C$n", "nmu" : "C$n", "dvt" : "Válido",
+                              "e" : "$e", "st" : "$st", "vap" : "$(100 - n)", "pvap" : "1,0" }"""
+        data = BRElections.JSON.parse("""
+            { "cdabr" : "br", "dg" : "05/10/2026", "hg" : "20:00:00", "tf" : "s",
+              "s" : { "ts" : "1", "st" : "1", "pst" : "100,00" },
+              "e" : { "te" : "10", "est" : "10", "c" : "9", "pc" : "90,00", "a" : "1", "pa" : "10,00" },
+              "v" : { "tv" : "9", "vv" : "9", "vb" : "0", "pvb" : "0,00", "tvn" : "0", "ptvn" : "0,00" },
+              "carg" : [ { "cd" : "1", "nmn" : "Presidente", "nv" : "1", "agr" : [ { "par" : [ { "sg" : "P",
+                "cand" : [ $(cand(1, "s", "2º turno")), $(cand(2, "s", "2º turno")),
+                           $(cand(3, "n", "Não eleito")), $(cand(4, "s", "Eleito")) ] } ] } ] } ] }
+            """)
+        df = BRElections._parse_live_results(data)
+        @test df.eleito == [false, false, false, true]
+        @test metadata(df, "cd_cargo") == 1
+    end
+
+    # Resultado no formato de `live_results`, para os testes de projeção.
+    function fake_live(votes::AbstractVector{<:Integer}; nr = collect(1:length(votes)), cargo = 1, vagas = 1,
+                       eleitorado = 1000, apurado = eleitorado, eleicao = "Eleição - 1º Turno",
+                       anulado = falses(length(votes)), abrangencia = "BR",
+                       at = DateTime(2026, 10, 25, 18))
+        df = DataFrame(nr_candidato = nr, nm_urna_candidato = ["C$i" for i in nr], nm_candidato = ["C$i" for i in nr],
+                       sg_partido = ["P$i" for i in nr], nm_agremiacao = Union{Missing,String}[missing for _ in nr],
+                       qt_votos = votes, pc_votos = 100 .* votes ./ max(sum(votes), 1), eleito = falses(length(votes)),
+                       ds_situacao = Union{Missing,String}[missing for _ in nr],
+                       ds_destinacao_voto = Union{Missing,String}[a ? "Anulado sub judice" : "Válido" for a in anulado],
+                       sq_candidato = string.(nr))
+        valid = sum(votes[.!anulado])
+        for (k, v) in ("cargo" => "X", "cd_cargo" => cargo, "vagas" => vagas, "eleicao" => eleicao,
+                       "abrangencia" => abrangencia, "eleitorado" => eleitorado, "eleitorado_apurado" => apurado,
+                       "votos_validos" => valid, "votos" => sum(votes), "totalizacao_final" => apurado == eleitorado,
+                       "atualizado_em" => at, "pc_secoes_totalizadas" => 100apurado / eleitorado,
+                       "secoes" => 100, "secoes_totalizadas" => round(Int, 100apurado / eleitorado),
+                       "comparecimento" => sum(votes), "abstencao" => max(apurado - sum(votes), 0),
+                       "pc_comparecimento" => 100 * sum(votes) / max(apurado, 1),
+                       "pc_abstencao" => 100 * max(apurado - sum(votes), 0) / max(apurado, 1),
+                       "votos_brancos" => 0, "votos_nulos" => 0, "pc_votos_validos" => 100.0,
+                       "pc_votos_brancos" => 0.0, "pc_votos_nulos" => 0.0)
+            metadata!(df, k, v; style = :note)
+        end
+        df
+    end
+
+    @testset "clinched — eleito e 2º turno garantidos pela matemática" begin
+        # maioria absoluta: 600 > (800 + 0)/2 com tudo apurado
+        @test clinched(fake_live([600, 150, 50])) == [:elected, :open, :open]
+        # falta apurar 300 eleitores: 600 > (800 + 300)/2 = 550 → eleito mesmo assim
+        @test clinched(fake_live([600, 150, 50]; eleitorado = 1100, apurado = 800))[1] === :elected
+        # com 500 faltando, o pior caso tira a maioria (600 < 650), mas ninguém mais
+        # pode passar de 50% nem o 3º alcançá-lo: o 2º turno está garantido
+        @test clinched(fake_live([600, 150, 50]; eleitorado = 1300, apurado = 800)) == [:runoff, :open, :open]
+        # ninguém chega a 50% nem pode chegar; o 3º não alcança o 2º → os dois no 2º turno
+        @test clinched(fake_live([400, 350, 250]; eleitorado = 1010, apurado = 1000)) == [:runoff, :runoff, :open]
+        # se alguém ainda pode passar de 50%, não há 2º turno garantido para ninguém
+        @test clinched(fake_live([400, 350, 250]; eleitorado = 1300, apurado = 1000)) == [:open, :open, :open]
+        # maioria simples (senado, 2 vagas): os dois primeiros, se o 3º não os alcança
+        sen = fake_live([500, 400, 100]; cargo = 5, vagas = 2, eleitorado = 1100, apurado = 1000)
+        @test clinched(sen) == [:elected, :elected, :open]
+        @test clinched(fake_live([500, 400, 100]; cargo = 5, vagas = 2, eleitorado = 1300, apurado = 1000)) ==
+              [:elected, :open, :open]
+        # 2º turno: maioria simples entre os dois
+        @test clinched(fake_live([520, 480]; eleicao = "Eleição - 2º Turno", eleitorado = 1030, apurado = 1000)) ==
+              [:elected, :open]
+        # prefeito em cidade com até 200 mil eleitores: maioria simples
+        @test clinched(fake_live([400, 350, 250]; cargo = 11))[1] === :elected
+        @test clinched(fake_live([400, 350, 250]; cargo = 11, eleitorado = 300_000, apurado = 300_000))[1] === :runoff
+        # cargos proporcionais: a vaga depende do quociente eleitoral
+        @test all(==(:open), clinched(fake_live([500, 10]; cargo = 6, vagas = 3)))
+        # candidatura anulada não é eleita nem conta como rival
+        @test clinched(fake_live([700, 600, 100]; cargo = 5, anulado = [true, false, false])) == [:open, :elected, :open]
+    end
+
+    @testset "projection — tendência e chance" begin
+        rng = BRElections.Random.Xoshiro(1)
+        # tudo apurado: sem incerteza
+        p = projection(fake_live([400, 350, 250]); rng, nsims = 500)
+        @test p.nr_candidato == [1, 2, 3]
+        @test p.pc_projetado ≈ [40, 35, 25] && p.pc_min ≈ p.pc_max
+        @test p.p_vitoria == [0, 0, 0] && p.p_segundo_turno == [1, 1, 0]
+        @test p.garantido == [:runoff, :runoff, :open]
+        @test metadata(p, "regra") == "majority" && metadata(p, "validos_restantes") == 0
+        @test size(metadata(p, "cenarios").pc) == (500, 3)
+
+        # no meio da apuração, as chances somam 1 (uma vaga, maioria simples)
+        mid = fake_live([520, 480]; eleicao = "2º Turno", eleitorado = 2000, apurado = 1000)
+        p = projection(mid; rng, nsims = 2000)
+        @test sum(p.p_vitoria) ≈ 1
+        @test p.p_vitoria[1] > 0.5 && all(ismissing, p.p_segundo_turno)
+        @test p.pc_min[1] < p.pc_projetado[1] < p.pc_max[1]
+
+        # Estado atrasado: o país apurado está 50,8% para o 1, mas tudo o que falta
+        # está num estado que, no que já apurou, vota 70% no 2.
+        a = fake_live([1100, 900]; eleicao = "2º Turno", eleitorado = 2000, apurado = 2000, abrangencia = "SP")
+        b = fake_live([120, 280]; eleicao = "2º Turno", eleitorado = 2000, apurado = 400, abrangencia = "BA")
+        nat = fake_live([1220, 1180]; eleicao = "2º Turno", eleitorado = 4000, apurado = 2400)
+        flat = projection(nat; rng)
+        strat = projection(nat; strata = [a, b], rng)
+        @test flat.nr_candidato[1] == 1                             # sem estratos, o 1 segue à frente
+        @test strat.nr_candidato[1] == 2                            # com eles, a virada aparece
+        @test strat.pc_projetado[1] > 51 && strat.p_vitoria[1] > 0.6
+        @test metadata(strat, "estratos") == 2
+
+        # 1º turno como referência: o estado que não apurou nada parte dele
+        b0 = fake_live([0, 0]; eleicao = "2º Turno", eleitorado = 2000, apurado = 0, abrangencia = "BA")
+        nat0 = fake_live([1100, 900]; eleicao = "2º Turno", eleitorado = 4000, apurado = 2000)
+        prev_a = fake_live([500, 400, 100]; nr = [1, 2, 3], abrangencia = "SP")
+        prev_b = fake_live([200, 700, 100]; nr = [1, 2, 3], abrangencia = "BA")
+        with_prev = projection(nat0; strata = [a, b0], previous = [prev_a, prev_b], rng)
+        without = projection(nat0; strata = [a, b0], rng)
+        pick(p, nr) = p.pc_projetado[p.nr_candidato .== nr][1]
+        @test pick(with_prev, 2) > pick(without, 2) + 5
+        # a UF sem nada apurado rende os válidos do 1º turno todo (1000 de 1000
+        # eleitores), não só os dos dois finalistas (900)
+        @test metadata(with_prev, "validos_restantes") ≈ 2000
+        @test metadata(with_prev, "usa_turno_anterior")
+        @test_throws ArgumentError projection(nat0; strata = [a, b0], previous = [prev_a])
+
+        # Estrato "demais municípios": o total menos as partes, sem negativos.
+        tot = fake_live([1000, 800]; eleitorado = 3000, apurado = 2000, abrangencia = "RN")
+        p1 = fake_live([600, 300]; eleitorado = 1500, apurado = 1200, abrangencia = "NATAL")
+        p2 = fake_live([100, 600]; eleitorado = 600, apurado = 300, abrangencia = "MOSSORÓ")
+        res = BRElections._residual(tot, [p1, p2])
+        @test res.qt_votos == [300, 0]                        # 800 − 900 vira 0
+        @test metadata(res, "eleitorado") == 900 && metadata(res, "eleitorado_apurado") == 500
+        @test metadata(res, "abrangencia") == "Demais municípios" && metadata(res, "estrato") == "resto"
+        @test metadata(tot, "abrangencia") == "RN"            # o total não é alterado
+
+        # _projection_inputs: estratos + resto, com os parâmetros municipais; se
+        # algum estrato falha, bloco só com o 1º turno do local todo.
+        prevtot = fake_live([900, 900, 200]; nr = [1, 2, 3], abrangencia = "RN")
+        setup = (strata = [(uf = "RN", url = "a"), (uf = "RN", url = "b")], residual = true,
+                 previous = [p1, p2, res], previous_total = prevtot, params = BRElections.PROJECTION_PARAMS_MUNICIPAL)
+        inp = BRElections._projection_inputs(setup, tot; fetch = q -> q.url == "a" ? p1 : p2)
+        @test length(inp.strata) == 3 && metadata(inp.strata[3], "estrato") == "resto"
+        @test inp.params === BRElections.PROJECTION_PARAMS_MUNICIPAL && inp.previous === setup.previous
+        @test projection(tot; inp...) isa DataFrame
+        down = BRElections._projection_inputs(setup, tot; fetch = q -> error("CDN fora"))
+        @test down.strata === nothing && only(down.previous) === prevtot && down.params === BRElections.PROJECTION_PARAMS_MUNICIPAL
+        old_shape = (strata = nothing, previous = [prevtot])     # sem estratos, formato simples
+        @test only(BRElections._projection_inputs(old_shape, tot).previous) === prevtot
+
+        # nada apurado e sem 1º turno: não há base
+        @test_throws ArgumentError projection(fake_live([0, 0]; eleitorado = 1000, apurado = 0))
+
+        # proporcional: projeta votos, não vagas
+        dep = projection(fake_live([500, 300, 200]; cargo = 6, vagas = 2, eleitorado = 2000, apurado = 1000); rng)
+        @test all(ismissing, dep.p_vitoria)
+
+        # Gama: média α
+        g = [BRElections._randgamma(rng, α) for α in (0.5, 3.0) for _ in 1:20_000]
+        @test sum(g[1:20_000]) / 20_000 ≈ 0.5 atol = 0.03
+        @test sum(g[20_001:end]) / 20_000 ≈ 3.0 atol = 0.1
+        @test BRElections.quantile_sorted([1.0, 2.0, 3.0, 4.0], 0.5) ≈ 2.5
+    end
+
+    @testset "live_dashboard — sem o Tachikoma, explica o que falta" begin
+        if Base.get_extension(BRElections, :BRElectionsTachikomaExt) === nothing
+            err = try live_dashboard(); catch e; e; end
+            @test err isa ErrorException && occursin("using Tachikoma", err.msg)
+        end
+        @test_throws ArgumentError live_dashboard(:vice_mayor)
+    end
+
+    @testset "live_dashboard — painel (Tachikoma, sem rede)" begin
+        @eval using Tachikoma
+        E = Base.get_extension(BRElections, :BRElectionsTachikomaExt)
+        @test E !== nothing
+        T = Base.invokelatest(() -> Tachikoma)
+
+        v1 = fake_live([550, 450, 100]; eleitorado = 2000, apurado = 1100, at = DateTime(2026, 10, 25, 18, 0))
+        v2 = fake_live([900, 700, 150]; eleitorado = 2000, apurado = 1750, at = DateTime(2026, 10, 25, 18, 5))
+        current = Ref{Any}(v1)
+        resolved = Ref(0)
+        m = E.Dashboard(; target = E.Target(:president, nothing, nothing, nothing),
+                        resolve = t -> (resolved[] += 1; (url = "x", uf = something(t.uf, "BR"))),
+                        fetch = q -> current[] isa Exception ? throw(current[]) : current[],
+                        prepare = q -> (strata = nothing, previous = nothing))
+        # Espera a consulta e a projeção (que roda à parte, depois dela).
+        pump!(m) = begin
+            deadline = time() + 60
+            while true
+                @test timedwait(() -> isready(m.tq.channel), 60.0) === :ok
+                Base.invokelatest(T.drain_tasks!, e -> Base.invokelatest(T.update!, m, e), m.tq)
+                (m.loading || m.projecting) && time() < deadline || break
+            end
+        end
+        key!(m, k) = Base.invokelatest(T.update!, m, k isa Char ? T.KeyEvent(k) : T.KeyEvent(k))
+        screen(m; w = 130, h = 40) = Base.invokelatest() do
+            buf = T.Buffer(T.Rect(1, 1, w, h))
+            T.view(m, T.Frame(buf, T.Rect(1, 1, w, h), T.GraphicsRegion[], T.PixelSnapshot[]))
+            join((String([buf.content[T.buf_index(buf, x, y)].char for x in 1:w]) for y in 1:h), "\n")
+        end
+
+        E.request!(m)
+        @test timedwait(() -> isready(m.tq.channel), 60.0) === :ok
+        Base.invokelatest(T.drain_tasks!, e -> Base.invokelatest(T.update!, m, e), m.tq)
+        # os votos aparecem antes da projeção, que segue calculando à parte
+        @test m.df === v1 && (m.projecting || m.proj !== nothing)
+        m.projecting && @test occursin("calculando a tendência", screen(m))
+        pump!(m)
+        @test m.df === v1 && m.error === nothing && resolved[] == 1 && !m.projecting
+        @test E.unchanged(v1, nothing, v1) && !E.unchanged(v1, nothing, v2) && !E.unchanged(nothing, nothing, v1)
+        stale_v1 = copy(v1); metadata!(stale_v1, "versao_anterior", true; style = :note)
+        @test !E.unchanged(v1, [stale_v1], v1)            # UF com versão anterior: busca de novo
+
+        # As UFs só são consultadas quando o nacional muda.
+        uf_calls = Ref(0)
+        nat = Ref{Any}(v1)
+        m2 = E.Dashboard(; target = E.Target(:president, nothing, nothing, nothing),
+                         resolve = t -> (url = "br", uf = "BR"),
+                         fetch = q -> q.uf == "BR" ? nat[] : (uf_calls[] += 1; fake_live(nat[].qt_votos;
+                                       eleitorado = 2000, apurado = metadata(nat[], "eleitorado_apurado"),
+                                       at = metadata(nat[], "atualizado_em"), abrangencia = q.uf)),
+                         prepare = q -> (strata = [(uf = "SP", url = "sp")], previous = nothing))
+        E.request!(m2); pump!(m2)
+        @test uf_calls[] == 1 && m2.strata !== nothing && m2.proj !== nothing
+        E.request!(m2); pump!(m2)                          # nada mudou: só o nacional
+        @test uf_calls[] == 1
+        nat[] = v2
+        E.request!(m2); pump!(m2)                          # versão nova: as UFs de novo
+        @test uf_calls[] == 2 && m2.df === v2
+        @test E.by_uf(m2)                                       # estrato "SP": painel por região
+
+        # Estratos municipais: os painéis listam municípios.
+        mun_part(name, f) = fake_live(round.(Int, v2.qt_votos ./ 2); eleitorado = 1000,
+                                      apurado = round(Int, 1000f), abrangencia = name)
+        mm = E.Dashboard(; target = E.Target(:governor, "RN", nothing, nothing),
+                         resolve = t -> (url = "rn", uf = "RN"), fetch = q -> q.url == "rn" ? v2 : mun_part(q.uf, q.url == "natal" ? 0.9 : 0.4),
+                         prepare = q -> (strata = [(uf = "NATAL", url = "natal"), (uf = "MOSSORÓ", url = "mossoro")],
+                                         residual = false, previous = nothing, previous_total = nothing))
+        E.request!(mm); pump!(mm)
+        @test mm.strata !== nothing && !E.by_uf(mm)
+        txt = screen(mm)
+        @test occursin("municípios", txt) && occursin("Natal", txt) && !occursin(" regiões ", txt)
+        mm.screen = :analysis
+        @test occursin("municípios pelo peso do que falta", screen(mm))
+        @test m.proj !== nothing && metadata(m.proj, "regra") == "majority"
+        txt = screen(m)
+        @test occursin("C1", txt) && occursin("Proj.", txt) && occursin("1º t.", txt)
+        @test occursin("AO VIVO", txt) && occursin("Falta apurar", txt)
+
+        key!(m, :tab)
+        @test m.screen === :analysis
+        txt = screen(m)
+        @test occursin("o que falta", txt) && occursin("cenários", txt) && occursin("Para virar, C2", txt)
+        key!(m, :tab)
+
+        # Versão nova: mesma consulta (sem resolver de novo), histórico e odômetro.
+        current[] = v2
+        E.request!(m); pump!(m)
+        @test m.df === v2 && resolved[] == 1 && length(m.history) == 2
+        @test m.anim !== nothing
+        m.anim_start = time() - E.ANIM_SECONDS / 2
+        mid = E.animated(m)
+        @test 550 < mid.qt_votos[1] < 900                     # entre as duas versões reais
+        @test 1100 < metadata(mid, "eleitorado_apurado") < 1750
+        m.anim_start = time() - 2E.ANIM_SECONDS
+        @test E.animated(m) === v2 && m.anim === nothing      # nunca passa do número publicado
+        pace = E.pace(m)
+        @test pace.votes ≈ (1750 - 1100) / 5                  # votos por minuto entre 18:00 e 18:05
+        @test pace.eta !== nothing
+        @test occursin("ritmo", screen(m))
+
+        # Falha: mostra o erro e mantém os números na tela.
+        current[] = ArgumentError("Sem resultado publicado")
+        E.request!(m); pump!(m)
+        @test m.error == "Sem resultado publicado" && m.df === v2
+        txt = screen(m)
+        @test occursin("Sem resultado publicado", txt) && occursin("C1", txt)
+
+        # Resposta de uma consulta superada é ignorada.
+        E.receive!(m, (gen = m.generation - 1, target = m.target, query = nothing, setup = nothing,
+                       df = v1, strata = nothing, proj = nothing, error = nothing))
+        @test m.df === v2
+
+        # Trocar a UF pelo teclado: resolve de novo, zera o histórico.
+        current[] = v1
+        key!(m, 'u'); @test m.input === :uf
+        foreach(c -> key!(m, c), "pe")
+        key!(m, :enter); pump!(m)
+        @test m.target.uf == "PE" && resolved[] == 2 && length(m.history) == 1 && m.error === nothing
+        key!(m, 'm'); key!(m, :escape)
+        @test m.input === nothing && m.target.municipality === nothing
+        # o campo começa vazio: digitar com uma UF na tela a troca, não acrescenta
+        key!(m, 'u'); @test m.buffer == "" && occursin("agora PE", screen(m))
+        foreach(c -> key!(m, c), "sp"); key!(m, :enter); pump!(m)
+        @test m.target.uf == "SP"
+
+        # Antes do primeiro voto: aguardando, e a projeção avisa que é só o 1º turno.
+        zero = fake_live([0, 0]; eleicao = "2º Turno", eleitorado = 2000, apurado = 0)
+        prev1 = fake_live([600, 500, 100])
+        mz = E.Dashboard(; target = E.Target(:president, nothing, nothing, nothing),
+                         resolve = t -> (url = "z", uf = "BR"), fetch = q -> zero,
+                         prepare = q -> (strata = nothing, previous = [prev1]))
+        E.request!(mz); pump!(mz)
+        @test mz.proj !== nothing
+        txt = screen(mz)
+        @test occursin("AGUARDANDO APURAÇÃO", txt) && !occursin("AO VIVO", txt)
+        @test occursin("nada apurado", txt) && occursin("aguardando os primeiros votos", txt)
+        mz.screen = :analysis
+        @test occursin("Nada apurado ainda", screen(mz))
+
+        # Cargo que exige UF/município: o painel pergunta antes de consultar.
+        m.target = E.Target(:president, nothing, nothing, nothing)
+        key!(m, :right)
+        @test m.input === :uf && m.pending.office === :governor && m.target.office === :president
+        foreach(c -> key!(m, c), "sp"); key!(m, :enter); pump!(m)
+        @test m.target == E.Target(:governor, "SP", nothing, nothing) && m.pending === nothing
+        key!(m, :left)                                    # volta a Presidente, com SP
+        pump!(m)
+        @test m.target.office === :president && m.target.uf == "SP"
+        m.target = E.Target(:president, nothing, nothing, nothing)
+        key!(m, :left)                                    # Vereador: UF e depois município
+        @test m.input === :uf
+        foreach(c -> key!(m, c), "pe"); key!(m, :enter)
+        @test m.input === :municipality && m.pending.uf == "PE"
+        foreach(c -> key!(m, c), "Recife"); key!(m, :enter); pump!(m)
+        @test m.target == E.Target(:councillor, "PE", "Recife", nothing)
+        m.target = E.Target(:president, nothing, nothing, nothing)
+        key!(m, :right); key!(m, :escape)                 # desistir no prompt não muda nada
+        @test m.input === nothing && m.pending === nothing && m.target.office === :president && !m.quit
+
+        @test E.cycle_office(:president, -1) === :councillor && E.cycle_office(:president, 1) === :governor
+        @test E.fmtint(1234567) == "1.234.567" && E.fmtint(-5) == "-5"
+        @test E.fmtpct(12.346) == "12,35%" && E.fmtpct(3.0; digits = 1, suffix = " p.p.") == "3,0 p.p."
+        @test E.fmtchance(0.999) == ">99%" && E.fmtchance(0.001) == "<1%" && E.fmtchance(0.5) == "50%"
+        @test E.fmtchance(missing) == "–"
+        @test E.fmtqty(1.26e6) == "1,3 mi" && E.fmtqty(41_000) == "41 mil"
+        @test E.clip("ABCDEFGH", 5) == "ABCD…"
+
+        # Terminal estreito: as colunas opcionais somem, o painel não quebra.
+        @test occursin("C1", screen(m; w = 70, h = 24))
+        key!(m, 'q')
+        @test m.quit
+    end
+
+    @testset "Divulgação de Resultados — ETag, novas tentativas e 404 (servidor local)" begin
+        # Servidor HTTP mínimo: responde a sequência dada, uma conexão por resposta,
+        # e guarda os cabeçalhos de cada requisição.
+        function scripted(responses)
+            server = listen(Sockets.localhost, 0)
+            port = Int(getsockname(server)[2])
+            seen = Dict{String,String}[]
+            task = @async for (status, headers, body) in responses
+                sock = accept(server)
+                h = Dict{String,String}()
+                readline(sock)
+                while (line = readline(sock)) != ""
+                    k, v = split(line, ": "; limit = 2)
+                    h[lowercase(k)] = v
+                end
+                push!(seen, h)
+                write(sock, "HTTP/1.1 $status X\r\nContent-Length: $(sizeof(body))\r\nConnection: close\r\n" *
+                            join("$k: $v\r\n" for (k, v) in headers) * "\r\n" * body)
+                close(sock)
+            end
+            (url = "http://127.0.0.1:$port/r$(rand(UInt32)).json", seen, server, task)
+        end
+        delay = BRElections.LIVE_RETRY_DELAY[]
+        BRElections.LIVE_RETRY_DELAY[] = 0.0
+        try
+            # 200 com ETag; depois 304 devolve a versão guardada, e a requisição
+            # levou o If-None-Match
+            srv = scripted([(200, ["ETag" => "\"v1\""], "{\"a\": 1}"), (304, String[], "")])
+            @test BRElections._fetch_live_json(srv.url)["a"] == 1
+            @test BRElections._fetch_live_json(srv.url)["a"] == 1
+            @test !haskey(srv.seen[1], "if-none-match") && srv.seen[2]["if-none-match"] == "\"v1\""
+            @test BRElections._live_cached_json(srv.url)["a"] == 1
+            close(srv.server)
+
+            # 403 e 503 são passageiros: tenta de novo até dar certo
+            srv = scripted([(403, String[], ""), (503, String[], ""), (200, String[], "{\"a\": 2}")])
+            @test BRElections._fetch_live_json(srv.url)["a"] == 2
+            @test length(srv.seen) == 3
+            close(srv.server)
+
+            # esgotadas as tentativas, o erro diz o status
+            srv = scripted([(403, String[], ""), (403, String[], ""), (403, String[], "")])
+            err = try BRElections._fetch_live_json(srv.url); catch e; e; end
+            @test err isa ErrorException && occursin("HTTP 403", err.msg)
+            close(srv.server)
+
+            # 404 é "não publicado": sem nova tentativa
+            srv = scripted([(404, String[], "")])
+            @test_throws ArgumentError BRElections._fetch_live_json(srv.url)
+            @test length(srv.seen) == 1
+            close(srv.server)
+        finally
+            BRElections.LIVE_RETRY_DELAY[] = delay
+        end
+        @test BRElections._live_cached_json("http://127.0.0.1:1/nunca.json") === nothing
+
+        # Várias consultas: a que falha usa a última versão dela; sem nenhuma, `nothing`
+        ok(q) = q == 2 ? error("CDN fora") : q
+        @test BRElections._fetch_all([1, 2, 3]; fetch = ok, fallback = q -> -q) == [1, -2, 3]
+        @test BRElections._fetch_all([1, 2, 3]; fetch = ok, fallback = q -> nothing) === nothing
+    end
+
     @testset "Prestação de contas e novos datasets — URLs e anos" begin
         @test dataset_url(:candidate_revenue, 2022) ==
               "https://cdn.tse.jus.br/estatistica/sead/odsele/prestacao_contas/prestacao_de_contas_eleitorais_candidatos_2022.zip"
@@ -920,6 +1346,25 @@ end
         @test nrow(read_tse_csv(csv; filter = row -> row.vr_virgula > 1000)) == 1
         @test eltype(read_tse_csv(csv; filter = row -> false).vr_virgula) == Float64
         @test BRElections._parse_money("1.234,56") === nothing   # milhar + decimal: não arrisca
+    end
+
+    @testset "Valores monetários — ponto de milhar decidido pela coluna" begin
+        dir = mktempdir()
+        csv = joinpath(dir, "milhar.csv")
+        write(csv, """
+            "SQ";"VR_BR";"VR_MILHAR";"VR_PONTO3";"VR_ZERO";"VR_MALFORMADO"
+            "1";"1.234.567,89";"1.500";"1270629.010";"0.500";"1.50,00"
+            "2";"500,5";"2.000.000";"12.5";"7";"3,00"
+            """)
+        df = read_tse_csv(csv)
+        @test df.vr_br == [1234567.89, 500.5]
+        @test df.vr_milhar == [1500.0, 2.0e6]          # não 1,5 nem 2,0
+        @test df.vr_ponto3 == [1270629.01, 12.5]       # um ponto decimal basta para decidir
+        @test df.vr_zero == [0.5, 7.0]                 # "0.500" não é grupo de milhar
+        @test df.vr_malformado == ["1.50,00", "3,00"]  # milhar mal formado: fica texto
+        @test BRElections._money_format(["1.500", missing, "-1"]) === :br
+        @test BRElections._money_format(["1.5", "1.500"]) === :dot
+        @test BRElections._money_format(["10", "-1"]) === :dot
     end
 
     @testset "Extração em blocos — Latin-1/UTF-8 nas fronteiras" begin

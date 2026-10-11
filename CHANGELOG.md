@@ -7,7 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `live_dashboard`: a terminal dashboard for election night, built on
+  Tachikoma.jl (a package extension — load it with `using Tachikoma`). Two
+  screens: the count (candidates, projection, win/runoff chances, clinched
+  marks, turnout, regions, lead over time) and the analysis (chance bars,
+  distribution of simulated outcomes against the deciding cut, what each
+  candidate needs from the remaining votes, the leader's chance over time,
+  states ranked by the weight of what is left). Counters roll to each new
+  version like an odometer; the header shows the pace of the count and the
+  estimated finish. `demo = true` replays the latest presidential count from
+  the real final results by state, in about three minutes.
+  `examples/live_dashboard.jl` runs it, setting Tachikoma up in a temporary
+  environment if needed.
+- `clinched`: who is already mathematically elected, or guaranteed in the
+  runoff, in the worst case for the uncounted electorate.
+- `projection` and `live_projection`: projected result, 80% range and chance
+  of winning (and of reaching the runoff), by simulating the votes still to be
+  counted. For the president, by state — each state's remaining votes follow
+  its own profile and remaining electorate, which captures states that count
+  late —, and in a runoff starting from each state's first round, shifted by
+  the swing already observed. Calibrated on counts rebuilt from the real 2022
+  results by electoral zone (`BRElections.PROJECTION_PARAMS`,
+  `dev/calibrate_projection.jl`): in the 2022 runoff the projected share is
+  off by 0.9 points with under 30% counted and the actual winner is favoured
+  from the start, while extrapolating the national total favours the loser
+  until 80% is counted.
+- Projection **by municipality** for offices contested across a state
+  (governor, senator, president within a state): the 60 largest
+  municipalities (`MAX_MUNICIPAL_STRATA`) each start from their own first
+  round, and the rest of the state is one block. In the 12 state runoffs of
+  2022 (`dev/calibrate_governor.jl`) it cut the early error from 4.6 to 2.8
+  points and picked the winner early on 85% of the time instead of 77%. Its
+  parameters (`PROJECTION_PARAMS_MUNICIPAL`) are more cautious, and are also
+  used when a place is projected as a single block, which was overconfident.
+- The dashboard shows the votes as soon as they arrive and computes the
+  projection in the background (preparing a state takes a few seconds the
+  first time); new polls don't cancel it.
+- `live_results` metadata: `cd_cargo` and `dt_eleicao`.
+- `election` in `live_results` (and the dashboard) stands for that voting day:
+  for an office or place it does not cover, the sibling election of the same
+  day is used — with the 2026 federal runoff code (6258), `:governor` brings
+  the state runoff (6260). The example script takes `--eleicao`.
+
+### Fixed
+
+- `live_results` marked candidates going to the runoff as `eleito = true`: the
+  TSE sets the "elected" flag for them too. Only elected candidates are
+  `true` now.
+- Reading several files (a national dataset for several states, for example)
+  could produce `Any` columns when a column was a number in one file and text
+  in another; they now become text, as when stacking several years.
+- Money columns (`VR_*`) with a thousands separator: `"1.500"` was read as
+  1.5. The decimal format is now decided per column (a comma anywhere, or dots
+  only in thousands groups, means the Brazilian format), so `"1.500"` is 1500
+  and `"1.234.567,89"` is converted instead of left as text.
+
 ### Changed
+
+- Requires Julia 1.10 (the current LTS); 1.9 is no longer supported.
+- `live_results` keeps the last version of each result in memory and
+  revalidates it with the TSE (ETag) on every call: polling no longer
+  downloads unchanged data. Transient refusals and failures of the TSE's CDN
+  (403, 429, 5xx, timeouts), common at the peak of election night, are
+  retried with backoff (`BRElections.LIVE_RETRIES`); 404 still means "not
+  published". The timeout is 20 s instead of 60 s.
+- In the state-by-state projection, a state whose request fails uses its last
+  version (flagged `versao_anterior`) instead of dropping the whole projection
+  to a single block; the dashboard says how many states are behind, and only
+  polls the states when the national result changes (1 request every 10 s
+  instead of 29 while nothing is new).
 
 - `filter` can use columns not listed in `columns`: they are read for the
   filter and left out of the result. `columns = [:nm_votavel], filter = row ->

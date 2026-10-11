@@ -25,7 +25,9 @@ authorisation is required.
   then;
 - TSE ↔ IBGE municipality code crosswalk (`municipalities`);
 - Live vote counting on election night, straight from the TSE's results system
-  (`live_results`);
+  (`live_results`), with a projection of the count (`projection`,
+  `live_projection`), what is already mathematically decided (`clinched`) and
+  a terminal dashboard (`live_dashboard`);
 - Discovery of published files by year (`available_files`);
 - ZIP decompression with on-the-fly ISO-8859-1 → UTF-8 transcoding;
 - Efficient import of large CSVs (CSV.jl, multithreaded, chunk-based reading);
@@ -44,7 +46,7 @@ authorisation is required.
 pkg> add BRElections
 ```
 
-Requires Julia 1.9 or later. Start Julia with threads (`julia -t auto`): large
+Requires Julia 1.10 or later. Start Julia with threads (`julia -t auto`): large
 files are read in parallel, which for the biggest TSE files cuts the time by
 a factor of 3 or more.
 
@@ -210,8 +212,10 @@ votes = leftjoin(votes, select(mun, :cd_municipio, :cd_municipio_ibge);
 The open-data files above are only published days after an election. On
 election night, `live_results` reads the TSE's results system
 (`resultados.tse.jus.br`, the source of its website and "Resultados" app), which
-is updated every few minutes while votes are counted. Nothing is cached. After
-the count, it keeps working for recent elections, by municipality too.
+is updated every few minutes while votes are counted. Nothing goes to the disk
+cache; the last version is kept in memory and revalidated (ETag) on every call,
+so polling is cheap. After the count, it keeps working for recent elections, by
+municipality too.
 
 ```julia
 pres = live_results(:president)                  # Brazil
@@ -233,6 +237,89 @@ that refreshes itself:
 
 ```bash
 julia --project=. examples/live_results.jl presidente --watch 60
+```
+
+#### Projection: trend, win probability, clinched seats
+
+`clinched(df)` says, for each candidate, what the arithmetic already
+guarantees in the worst case (every voter still uncounted turns out and votes
+against them): `:elected`, `:runoff` (at least goes to the runoff) or `:open`.
+
+`live_projection` (or `projection` on data you already have) simulates the
+votes still to be counted and returns, per candidate, the projected share, an
+80% range, the chance of winning (outright, when a runoff is possible) and of
+reaching the runoff:
+
+```julia
+live_projection()                      # president
+live_projection(:governor; uf = "PE")
+```
+
+The count does not advance evenly: states finish at different times (the
+Northeast usually later), and the uncounted electorate does not vote like the
+counted one. For the presidential race the projection is done **by state**:
+each state's remaining votes follow that state's profile, weighted by how many
+voters are still uncounted there. In a **runoff**, a state that has counted
+little starts from its own first-round result, shifted by the swing already
+seen in the states that counted more (the transfer of the eliminated
+candidates' votes). The parameters (`BRElections.PROJECTION_PARAMS`) were
+calibrated on counts rebuilt from the real 2022 results by electoral zone
+(`dev/calibrate_projection.jl`): real zones counted in different orders
+(capitals first, last, at random; the Northeast late or not). There, the 80%
+range holds the final result 81–96% of the time at every stage; in the runoff,
+using each state's first round, the projected share is off by 0.9 points with
+under 30% counted and 0.1 above 80%, and the actual winner is favoured from
+the start — extrapolating the national total is off by 4 points early on and
+favours the loser until 80% is counted. It is a simple, transparent model
+with no polls: it shows where the count points, not what will happen.
+
+For an office contested across a state (governor, senator, or president within
+a state), the projection is done **by municipality** in the same way: the 60
+largest municipalities (`BRElections.MAX_MUNICIPAL_STRATA`) each start from
+their own first round, and the rest of the state is one more block. In the 12
+state runoffs of 2022 (`dev/calibrate_governor.jl`) this cut the error from 4.6
+to 2.8 points with up to 25% counted (2.7 to 1.6 overall) and picked the winner
+85% of the time early on instead of 77%; it still struggles where the vote
+transfer was very uneven (MS and SE in 2022, where the first-round leader lost
+the runoff). The first call for a state downloads each municipality's first
+round once (a few seconds; final files).
+
+#### Terminal dashboard
+
+`live_dashboard` (needs [Tachikoma.jl](https://github.com/kahliburke/Tachikoma.jl),
+loaded with `using Tachikoma`) puts all of this in a terminal dashboard with two
+screens, switched with `Tab`: the **count** (candidates with votes, bars,
+projection, range, win and runoff chances, clinched marks, turnout, regions
+with how much of the remaining electorate is there, the lead over time) and the
+**analysis** (chance bars, the distribution of simulated outcomes against the
+deciding cut — 50% or the last seat —, the share of the remaining votes each
+candidate needs to overtake or win outright, the leader's chance over time, and
+the states ranked by the weight of what is left to count).
+
+The TSE does not publish votes one by one — each voting machine sends the
+whole section at once, and the aggregate is republished as reports arrive,
+with up to about a minute of CDN caching. The dashboard polls every few
+seconds (a 304 costs nothing), and when a new version arrives the counters roll
+to the new numbers like an odometer, never past the last published figure. The
+header shows the pace of the count (votes and sections per minute) and the
+estimated finish time.
+
+```julia
+using BRElections, Tachikoma
+live_dashboard()                                  # president, Brazil
+live_dashboard(:mayor; uf = "PE", municipality = "Recife")
+live_dashboard(demo = true)                       # simulated count, ~3 minutes
+```
+
+`demo = true` replays the latest presidential count from the real final
+results by state, compressed into about three minutes (the Northeast starting
+later, early returns skewed), to see the dashboard outside election day; the
+intermediate numbers are simulated and the title says so. The example script
+sets up Tachikoma in a temporary environment if you don't have it:
+
+```bash
+julia -t auto examples/live_dashboard.jl --demo
+julia -t auto examples/live_dashboard.jl governador sp
 ```
 
 ### Cache

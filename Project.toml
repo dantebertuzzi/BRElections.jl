@@ -10,9 +10,16 @@ Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Scratch = "6c6a2e73-6563-6170-7368-637461726353"
 Unicode = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
 ZipFile = "a5390f91-8eb1-5f08-bee0-b1d1ffed6cea"
+
+[weakdeps]
+Tachikoma = "468859d6-42d8-48b7-8ad9-1d312e0e3b0a"
+
+[extensions]
+BRElectionsTachikomaExt = "Tachikoma"
 
 [compat]
 CSV = "0.10, 1"
@@ -21,16 +28,21 @@ Dates = "1"
 Downloads = "1"
 JSON = "1"
 Logging = "1"
+Random = "1"
+Sockets = "1"
 Scratch = "1"
 StringEncodings = "0.3"
+Tachikoma = "2.6"
 Test = "1"
 Unicode = "1"
 ZipFile = "0.10"
-julia = "1.9"
+julia = "1.10"
 
 [extras]
+Sockets = "6462fe0b-24de-5631-8697-dd941f90decc"
 StringEncodings = "69024149-9ee7-55f6-a4c4-859efe599b68"
+Tachikoma = "468859d6-42d8-48b7-8ad9-1d312e0e3b0a"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["StringEncodings", "Test"]
+test = ["Sockets", "StringEncodings", "Tachikoma", "Test"]
