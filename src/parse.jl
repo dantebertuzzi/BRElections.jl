@@ -40,9 +40,41 @@ end
 # senão, ficam como estão.
 _is_money_column(name) = startswith(lowercase(String(name)), "vr_")
 
+# Um número com um separador só, de qualquer tipo ("1500,00", "-9.827566").
+# Serve às coordenadas; os valores monetários usam `_money_format`.
 function _parse_money(s::AbstractString)
     t = strip(s)
     tryparse(Float64, count(==(','), t) == 1 && !occursin('.', t) ? replace(t, ',' => '.') : t)
+end
+
+# Número no formato brasileiro, com ponto de milhar opcional: "1.500,00",
+# "1.500", "1500,5". Grupos de milhar mal formados ("1.50,00") não casam.
+const _BR_NUMBER = r"^[+-]?([1-9]\d{0,2}(\.\d{3})+|\d+)(,\d+)?$"
+const _THOUSANDS = r"^[+-]?[1-9]\d{0,2}(\.\d{3})+$"
+
+# Formato decimal de uma coluna VR_*, decidido pela coluna toda: um valor
+# isolado é ambíguo ("1.500" é 1500 com ponto de milhar, ou 1,5 com ponto
+# decimal). Vírgula em algum valor, ou pontos só em grupos de milhar, é o
+# formato brasileiro (`:br`); senão, ponto decimal (`:dot`).
+function _money_format(col)
+    dotted = false
+    for x in col
+        ismissing(x) && continue
+        t = strip(x)
+        occursin(',', t) && return :br
+        if occursin('.', t)
+            dotted = true
+            occursin(_THOUSANDS, t) || return :dot
+        end
+    end
+    dotted ? :br : :dot
+end
+
+function _parse_money(s::AbstractString, format::Symbol)
+    t = strip(s)
+    format === :dot && return occursin(',', t) ? nothing : tryparse(Float64, t)
+    occursin(_BR_NUMBER, t) || return nothing
+    tryparse(Float64, replace(replace(t, '.' => ""), ',' => '.'))
 end
 
 function _convert_money_columns!(df::DataFrame)
@@ -50,11 +82,12 @@ function _convert_money_columns!(df::DataFrame)
         _is_money_column(name) || continue
         col = df[!, name]
         nonmissingtype(eltype(col)) <: AbstractString || continue
+        format = _money_format(col)
         parsed = Vector{Union{Missing,Float64}}(undef, length(col))
         ok = true
         for (i, x) in enumerate(col)
             ismissing(x) && (parsed[i] = missing; continue)
-            v = _parse_money(x)
+            v = _parse_money(x, format)
             v === nothing && (ok = false; break)
             parsed[i] = v
         end
@@ -455,6 +488,8 @@ nomeados de [`read_tse_csv`](@ref).
 """
 function read_tse_csvs(paths::AbstractVector{<:AbstractString}; kwargs...)
     isempty(paths) && throw(ArgumentError("Lista de arquivos vazia."))
-    dfs = [read_tse_csv(p; kwargs...) for p in paths]
-    length(dfs) == 1 ? only(dfs) : reduce(vcat, dfs; cols = :union)
+    dfs = DataFrame[read_tse_csv(p; kwargs...) for p in paths]
+    # Cada arquivo infere os tipos sozinho: uma coluna pode sair número num e
+    # texto noutro, e o `vcat` daria uma coluna `Any`.
+    length(dfs) == 1 ? only(dfs) : _stack(dfs)
 end

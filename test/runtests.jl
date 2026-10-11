@@ -469,6 +469,18 @@ end
         @test df.nr_cpf_candidato[2] == "01234567890"
     end
 
+    @testset "read_tse_csvs — tipos incompatíveis entre arquivos viram texto, não Any" begin
+        dir = mktempdir()
+        pe = joinpath(dir, "x_PE.csv")
+        pb = joinpath(dir, "x_PB.csv")
+        write(pe, "SG_UF;CD_X;QT\n\"PE\";\"1\";\"10\"\n")
+        write(pb, "SG_UF;CD_X;QT\n\"PB\";\"A1\";\"2.5\"\n")
+        df = BRElections.read_tse_csvs([pe, pb])
+        @test eltype(df.cd_x) == String
+        @test df.cd_x == ["1", "A1"]
+        @test eltype(df.qt) == Float64                 # números: promovidos
+    end
+
     @testset "select_csvs — uf insensível a caixa" begin
         dir = mktempdir()
         zippath = make_fixture_zip(dir; per_uf = true)
@@ -920,6 +932,25 @@ end
         @test nrow(read_tse_csv(csv; filter = row -> row.vr_virgula > 1000)) == 1
         @test eltype(read_tse_csv(csv; filter = row -> false).vr_virgula) == Float64
         @test BRElections._parse_money("1.234,56") === nothing   # milhar + decimal: não arrisca
+    end
+
+    @testset "Valores monetários — ponto de milhar decidido pela coluna" begin
+        dir = mktempdir()
+        csv = joinpath(dir, "milhar.csv")
+        write(csv, """
+            "SQ";"VR_BR";"VR_MILHAR";"VR_PONTO3";"VR_ZERO";"VR_MALFORMADO"
+            "1";"1.234.567,89";"1.500";"1270629.010";"0.500";"1.50,00"
+            "2";"500,5";"2.000.000";"12.5";"7";"3,00"
+            """)
+        df = read_tse_csv(csv)
+        @test df.vr_br == [1234567.89, 500.5]
+        @test df.vr_milhar == [1500.0, 2.0e6]          # não 1,5 nem 2,0
+        @test df.vr_ponto3 == [1270629.01, 12.5]       # um ponto decimal basta para decidir
+        @test df.vr_zero == [0.5, 7.0]                 # "0.500" não é grupo de milhar
+        @test df.vr_malformado == ["1.50,00", "3,00"]  # milhar mal formado: fica texto
+        @test BRElections._money_format(["1.500", missing, "-1"]) === :br
+        @test BRElections._money_format(["1.5", "1.500"]) === :dot
+        @test BRElections._money_format(["10", "-1"]) === :dot
     end
 
     @testset "Extração em blocos — Latin-1/UTF-8 nas fronteiras" begin

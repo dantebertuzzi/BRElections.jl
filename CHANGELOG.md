@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Reading several files (a national dataset for several states, for example)
+  could produce `Any` columns when a column was a number in one file and text
+  in another; they now become text, as when stacking several years.
+- Money columns (`VR_*`) with a thousands separator: `"1.500"` was read as
+  1.5. The decimal format is now decided per column (a comma anywhere, or dots
+  only in thousands groups, means the Brazilian format), so `"1.500"` is 1500
+  and `"1.234.567,89"` is converted instead of left as text.
+
 ### Changed
 
 - `filter` can use columns not listed in `columns`: they are read for the
