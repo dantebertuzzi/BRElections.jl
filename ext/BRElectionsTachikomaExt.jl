@@ -295,6 +295,8 @@ unchanged(old, oldstrata, new) =
 
 stale(df) = metadata(df, "versao_anterior", false)
 
+nothing_counted(df) = df !== nothing && metadata(df, "votos_validos") == 0
+
 _message(e::ArgumentError) = e.msg
 _message(e::TaskFailedException) = _message(e.task.exception)
 _message(e) = first(split(sprint(showerror, e), '\n'))
@@ -418,9 +420,9 @@ function navigate!(m::Dashboard, evt::KeyEvent)
             request!(m, with(m.target; office))
         end
     elseif k === :char && c == 'u'
-        m.input, m.buffer = :uf, something(m.target.uf, "")
+        m.input, m.buffer = :uf, ""             # o valor atual aparece como dica
     elseif k === :char && c == 'm'
-        m.input, m.buffer = :municipality, m.target.municipality === nothing ? "" : string(m.target.municipality)
+        m.input, m.buffer = :municipality, ""
     elseif k === :char && c == 'r'
         request!(m)
     elseif k === :tab || k === :backtab || (k === :char && c == 'a')
@@ -606,6 +608,8 @@ function draw_header!(m::Dashboard, buf, area)
     # Selo à direita: AO VIVO pulsando, FINAL fixo.
     badge, style = if _final(m)
         "✔ TOTALIZAÇÃO FINAL", tstyle(:success; bold = true)
+    elseif nothing_counted(df)
+        "◌ AGUARDANDO APURAÇÃO", tstyle(:warning; bold = true)
     elseif df !== nothing
         pulse = 0.5 + 0.5 * sin(m.tick / 4)
         "● AO VIVO", Style(; fg = dim_color(Tachikoma.to_rgb(tstyle(:error).fg), 0.6 * (1 - pulse)), bold = true)
@@ -760,8 +764,11 @@ function draw_candidates!(m::Dashboard, buf, area)
     if m.proj !== nothing && !_final(m)
         how = metadata(m.proj, "estratos") > 1 ? "por UF" : "do local todo"
         metadata(m.proj, "usa_turno_anterior") && (how *= " + 1º turno")
-        x = set_string!(buf, inner.x + 1, by, " tendência $how · modelo simples, não é pesquisa ",
-                        tstyle(:text_dim); max_x = right(inner) - 16)
+        note = nothing_counted(m.df) ?
+            " nada apurado: projeção = 1º turno, eliminados divididos na proporção " :
+            " tendência $how · modelo simples, não é pesquisa "
+        x = set_string!(buf, inner.x + 1, by, note,
+                        nothing_counted(m.df) ? tstyle(:warning) : tstyle(:text_dim); max_x = right(inner) - 16)
         # UFs cuja consulta falhou entram com a versão anterior: avisa.
         late = m.strata === nothing ? 0 : count(stale, m.strata)
         late > 0 && set_string!(buf, x, by, " ⚠ $late UF$(late == 1 ? "" : "s") com a versão anterior ",
@@ -861,8 +868,12 @@ function draw_history!(m::Dashboard, buf, area)
         return
     end
     last_ = h[end]
-    xx = set_string!(buf, x, inner.y, "agora " * fmtpct(last_.gap; suffix = " p.p."),
-                     tstyle(:text_bright; bold = true); max_x = r)
+    xx = if nothing_counted(m.df)
+        set_string!(buf, x, inner.y, "aguardando os primeiros votos", tstyle(:text_dim); max_x = r)
+    else
+        set_string!(buf, x, inner.y, "agora " * fmtpct(last_.gap; suffix = " p.p."),
+                    tstyle(:text_bright; bold = true); max_x = r)
+    end
     if length(h) >= 2
         d = last_.gap - h[end-1].gap
         arrow = d > 0 ? "▲" : d < 0 ? "▼" : "="
@@ -900,7 +911,10 @@ function draw_status!(m::Dashboard, buf, area)
          Span("m ", key), Span("município  ", dim), Span("r ", key), Span("atualizar  ", dim),
          Span("q ", key), Span("sair", dim)]
     else
-        what = m.input === :uf ? "UF (vazio = Brasil)" : "Município — nome, código TSE ou IBGE (vazio = a UF toda)"
+        base = something(m.pending, m.target)
+        what = m.input === :uf ?
+            "UF$(base.uf === nothing ? "" : " (agora $(base.uf))") — vazio = Brasil" :
+            "Município$(base.municipality === nothing ? "" : " (agora $(base.municipality))") — nome, código TSE ou IBGE; vazio = a UF toda"
         m.pending === nothing || (what = "$(office_name(m.pending.office)) · " * what)
         [Span(" $what: ", key), Span(m.buffer * "▏", tstyle(:text_bright)),
          Span("   enter confirma · esc cancela", dim)]
@@ -1049,8 +1063,16 @@ function draw_needs!(m::Dashboard, buf, area)
     df, p = m.df, m.proj
     rest = metadata(p, "validos_restantes")
     lines = Tuple{String,Any}[]
-    push!(lines, ("Válidos a apurar (est.): " * fmtint(round(Int, rest)), tstyle(:text)))
-    if nrow(df) >= 2
+    if nothing_counted(df)
+        push!(lines, ("Nada apurado ainda.", tstyle(:text_bright; bold = true)))
+        push!(lines, ("Válidos esperados (pelo 1º turno): " * fmtint(round(Int, rest)), tstyle(:text)))
+        push!(lines, ("Até os primeiros votos, a projeção é o 1º turno de cada UF com os votos dos " *
+                      "eliminados divididos na proporção dos finalistas — um ponto de partida, não uma previsão.",
+                      tstyle(:text_dim)))
+    else
+        push!(lines, ("Válidos a apurar (est.): " * fmtint(round(Int, rest)), tstyle(:text)))
+    end
+    if nrow(df) >= 2 && !nothing_counted(df)
         v1, v2 = df.qt_votos[1], df.qt_votos[2]
         n1, n2 = df.nm_urna_candidato[1], df.nm_urna_candidato[2]
         V = sum(df.qt_votos)

@@ -761,7 +761,9 @@ end
                 { "cd" : "6257", "nm" : "Federal 1T", "abr" : [ { "cd" : "br", "cp" : [ { "cd" : "1" } ] } ] },
                 { "cd" : "6259", "nm" : "Estadual 1T", "abr" : [ { "cd" : "br", "cp" : [ { "cd" : "3" }, { "cd" : "5" } ] } ] } ] },
               { "c" : "ele2026", "dt" : "25/10/2026", "e" : [
-                { "cd" : "6258", "nm" : "Federal 2T", "abr" : [ { "cd" : "br", "cp" : [ { "cd" : "1" } ] } ] } ] } ] }
+                { "cd" : "6258", "nm" : "Federal 2T", "abr" : [ { "cd" : "br", "cp" : [ { "cd" : "1" } ] } ] },
+                { "cd" : "6260", "nm" : "Estadual 2T", "abr" : [ { "cd" : "am", "cp" : [ { "cd" : "3" } ] },
+                                                                { "cd" : "rn", "cp" : [ { "cd" : "3" } ] } ] } ] } ] }
             """)
         find(cargo; kw...) = BRElections._find_election(config, cargo; kw...).ele
         dia = Date(2026, 10, 4)
@@ -780,6 +782,18 @@ end
         @test find(3; uf = "PE", today = Date(2026, 7, 1)) == "6259"   # única, embora futura
         @test find(13; uf = "SP", municipality = 71072, today = dia) == "619"   # vereador não teve 2º turno
         @test_throws ArgumentError BRElections._find_election(config, 99)
+        @test find(3; uf = "AM", today = Date(2026, 10, 25)) == "6260"
+        @test find(3; uf = "SP", today = Date(2026, 10, 25)) == "6259"   # sem 2º turno em SP
+
+        # Eleição dada vale como "este dia de votação": cargo de outra eleição do
+        # mesmo dia vai para a irmã; sem irmã que sirva, erro claro.
+        explicit(code, cargo, u) = BRElections._explicit_election(config, code, cargo, u, nothing).ele
+        @test explicit(6258, 1, "BR") == "6258"
+        @test explicit(6258, 3, "AM") == "6260"
+        @test explicit("6260", 1, "BR") == "6258"
+        @test explicit(6257, 3, "SP") == "6259"
+        @test_throws ArgumentError explicit(6258, 3, "SP")        # SP não tem 2º turno de governador
+        @test_throws ArgumentError explicit(9999, 1, "BR")
     end
 
     @testset "live_results — parsing (offline)" begin
@@ -1097,6 +1111,24 @@ end
         @test m.target.uf == "PE" && resolved[] == 2 && length(m.history) == 1 && m.error === nothing
         key!(m, 'm'); key!(m, :escape)
         @test m.input === nothing && m.target.municipality === nothing
+        # o campo começa vazio: digitar com uma UF na tela a troca, não acrescenta
+        key!(m, 'u'); @test m.buffer == "" && occursin("agora PE", screen(m))
+        foreach(c -> key!(m, c), "sp"); key!(m, :enter); pump!(m)
+        @test m.target.uf == "SP"
+
+        # Antes do primeiro voto: aguardando, e a projeção avisa que é só o 1º turno.
+        zero = fake_live([0, 0]; eleicao = "2º Turno", eleitorado = 2000, apurado = 0)
+        prev1 = fake_live([600, 500, 100])
+        mz = E.Dashboard(; target = E.Target(:president, nothing, nothing, nothing),
+                         resolve = t -> (url = "z", uf = "BR"), fetch = q -> zero,
+                         prepare = q -> (strata = nothing, previous = [prev1]))
+        E.request!(mz); pump!(mz)
+        @test mz.proj !== nothing
+        txt = screen(mz)
+        @test occursin("AGUARDANDO APURAÇÃO", txt) && !occursin("AO VIVO", txt)
+        @test occursin("nada apurado", txt) && occursin("aguardando os primeiros votos", txt)
+        mz.screen = :analysis
+        @test occursin("Nada apurado ainda", screen(mz))
 
         # Cargo que exige UF/município: o painel pergunta antes de consultar.
         m.target = E.Target(:president, nothing, nothing, nothing)

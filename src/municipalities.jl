@@ -33,6 +33,20 @@ _election_entry(pl, e) = (ciclo = pl["c"], ele = e["cd"], nome = get(e, "nm", ""
 
 _has_office(abr, cargo::Int) = any(cp -> parse(Int, cp["cd"]) == cargo, get(abr, "cp", ()))
 
+# A eleição `e` do catálogo tem o cargo no local? Uma abrangência cobre o local
+# se for `br`, ou a própria UF (`u`, em minúsculas); quando ela lista
+# municípios, o município precisa estar na lista.
+function _covers(e, cargo::Int, u, municipality)
+    any(e["abr"]) do abr
+        _has_office(abr, cargo) || return false
+        abr["cd"] == "br" && return true
+        (u === nothing || abr["cd"] != u) && return false
+        muns = get(abr, "mu", ())
+        isempty(muns) && return true
+        municipality !== nothing && any(m -> parse(Int, m["cd"]) == municipality, muns)
+    end
+end
+
 """
     _find_election(config, cargo; uf = nothing, municipality = nothing, today = today()) -> NamedTuple
 
@@ -51,15 +65,7 @@ function _find_election(config, cargo::Int;
                         municipality::Union{Nothing,Integer} = nothing,
                         today::Date = Dates.today())
     u = uf === nothing ? nothing : lowercase(uf)
-    covers(abr) = begin
-        _has_office(abr, cargo) || return false
-        abr["cd"] == "br" && return true
-        (u === nothing || abr["cd"] != u) && return false
-        muns = get(abr, "mu", ())
-        isempty(muns) && return true
-        municipality !== nothing && any(m -> parse(Int, m["cd"]) == municipality, muns)
-    end
-    found = [_election_entry(pl, e) for pl in config["pl"] for e in pl["e"] if any(covers, e["abr"])]
+    found = [_election_entry(pl, e) for pl in config["pl"] for e in pl["e"] if _covers(e, cargo, u, municipality)]
     isempty(found) && throw(ArgumentError(
         "Nenhuma eleição com o cargo $cargo" *
         (u === nothing ? "" : " em $(uppercase(u))") *

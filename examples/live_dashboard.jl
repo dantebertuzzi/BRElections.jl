@@ -7,6 +7,7 @@
 #   julia -t auto examples/live_dashboard.jl governador sp
 #   julia -t auto examples/live_dashboard.jl prefeito pe recife
 #   julia -t auto examples/live_dashboard.jl senador pe --interval 30
+#   julia -t auto examples/live_dashboard.jl --eleicao 6258          # uma eleição específica (ex.: 2º turno de 2026)
 #
 # O Tachikoma não é dependência do pacote. Se ele não estiver no seu ambiente,
 # o script monta um ambiente temporário com o BRElections deste diretório e o
@@ -40,6 +41,7 @@ function main(args)
     pos = String[]
     demo = false
     interval = 10
+    election = nothing
     i = 1
     while i <= length(args)
         a = args[i]
@@ -47,6 +49,8 @@ function main(args)
             demo = true
         elseif a == "--interval"
             interval = parse(Int, args[i += 1])
+        elseif a == "--eleicao"
+            election = args[i += 1]
         else
             push!(pos, a)
         end
@@ -58,7 +62,7 @@ function main(args)
     Threads.nthreads() == 1 &&
         @warn "Rode com threads (julia -t auto): a projeção é calculada em segundo plano."
     live_dashboard(CARGOS[nome]; uf = get(pos, 2, nothing), municipality = get(pos, 3, nothing),
-                   interval, demo)
+                   election, interval, demo)
 end
 
 try

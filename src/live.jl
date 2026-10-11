@@ -183,6 +183,8 @@ função continua servindo para consultar eleições recentes.
 - `election`: código da eleição no TSE, para escolher uma específica. Por
   padrão, usa a eleição mais recente (já realizada) que tenha o cargo e cubra
   o local — então o 2º turno é escolhido automaticamente depois de ocorrer.
+  Se a eleição dada não tem o cargo no local, vale a do mesmo dia que tenha:
+  com o código do 2º turno federal, `:governor` traz o 2º turno estadual.
 
 # Retorno
 
@@ -250,11 +252,7 @@ function _live_query(office::Union{Symbol,Integer};
         _find_election(config, cargo; uf = u,
                        municipality = mun === nothing ? nothing : mun.cd_municipio)
     else
-        code = string(election)
-        found = [_election_entry(pl, e) for pl in config["pl"] for e in pl["e"] if e["cd"] == code]
-        isempty(found) && throw(ArgumentError(
-            "Eleição $code não está no catálogo da Divulgação de Resultados do TSE."))
-        only(found)
+        _explicit_election(config, election, cargo, u, mun === nothing ? nothing : mun.cd_municipio)
     end
 
     url = _live_results_url(ele.ciclo, ele.ele, cargo, lowercase(u),
@@ -262,6 +260,24 @@ function _live_query(office::Union{Symbol,Integer};
     (url = url, eleicao = ele.nome, cd_eleicao = parse(Int, ele.ele), ciclo = ele.ciclo, dt = ele.dt,
      cargo = cargo, uf = u, cd_municipio = mun === nothing ? nothing : mun.cd_municipio,
      abrangencia = mun === nothing ? nothing : "$(mun.nm_municipio) - $(mun.sg_uf)")
+end
+
+# A eleição de código `election` para o cargo e o local. Ela vale como "este
+# dia de votação": se não tem o cargo no local, vale a eleição irmã do mesmo
+# ciclo e da mesma data que tenha (o 2º turno de governador é uma eleição
+# estadual; o de presidente, uma federal).
+function _explicit_election(config, election, cargo, u, cd_mun)
+    code = string(election)
+    found = [(pl, e) for pl in config["pl"] for e in pl["e"] if e["cd"] == code]
+    isempty(found) && throw(ArgumentError(
+        "Eleição $code não está no catálogo da Divulgação de Resultados do TSE."))
+    pl, e = only(found)
+    _covers(e, cargo, lowercase(u), cd_mun) && return _election_entry(pl, e)
+    siblings = [_election_entry(p2, e2) for p2 in config["pl"] for e2 in p2["e"]
+                if p2["c"] == pl["c"] && p2["dt"] == pl["dt"] && _covers(e2, cargo, lowercase(u), cd_mun)]
+    isempty(siblings) && throw(ArgumentError(
+        "A eleição $code ($(get(e, "nm", ""))) não tem este cargo neste local, nem outra eleição do mesmo dia."))
+    first(siblings)
 end
 
 _live_fetch(q) = _live_df(q, _fetch_live_json(q.url))

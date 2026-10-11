@@ -178,6 +178,12 @@ dos cenários), `p_vitoria` (chance de ser eleito — no 1º turno, se houver 2�
 (os cenários simulados: `nr_candidato` e a matriz `pc`, cenários × candidatos). Em cargos proporcionais, as chances
 são `missing`: a vaga depende do quociente eleitoral.
 
+Antes de qualquer voto apurado, num 2º turno, a projeção é só o 1º turno de
+cada parte, com os votos dos eliminados divididos entre os finalistas na
+proporção dos votos deles: um ponto de partida, não uma previsão (em 2022, essa
+conta dava 52,9% a Lula, que teve 50,9%). Ela é corrigida assim que os votos
+começam a chegar.
+
 É um modelo simples, transparente e sem pesquisas: diz para onde aponta a
 apuração, não o que vai acontecer. Os parâmetros estão em
 [`PROJECTION_PARAMS`](@ref BRElections.PROJECTION_PARAMS). Veja também

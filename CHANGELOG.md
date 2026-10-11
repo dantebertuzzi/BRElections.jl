@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the start, while extrapolating the national total favours the loser
   until 80% is counted.
 - `live_results` metadata: `cd_cargo` and `dt_eleicao`.
+- `election` in `live_results` (and the dashboard) stands for that voting day:
+  for an office or place it does not cover, the sibling election of the same
+  day is used — with the 2026 federal runoff code (6258), `:governor` brings
+  the state runoff (6260). The example script takes `--eleicao`.
 
 ### Fixed
 
