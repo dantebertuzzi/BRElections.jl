@@ -975,6 +975,9 @@ end
         without = projection(nat0; strata = [a, b0], rng)
         pick(p, nr) = p.pc_projetado[p.nr_candidato .== nr][1]
         @test pick(with_prev, 2) > pick(without, 2) + 5
+        # a UF sem nada apurado rende os válidos do 1º turno todo (1000 de 1000
+        # eleitores), não só os dos dois finalistas (900)
+        @test metadata(with_prev, "validos_restantes") ≈ 2000
         @test metadata(with_prev, "usa_turno_anterior")
         @test_throws ArgumentError projection(nat0; strata = [a, b0], previous = [prev_a])
 

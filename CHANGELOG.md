@@ -28,8 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   counted. For the president, by state — each state's remaining votes follow
   its own profile and remaining electorate, which captures states that count
   late —, and in a runoff starting from each state's first round, shifted by
-  the swing already observed. Calibrated on count replays from the 2026 first
-  round (`BRElections.PROJECTION_PARAMS`).
+  the swing already observed. Calibrated on counts rebuilt from the real 2022
+  results by electoral zone (`BRElections.PROJECTION_PARAMS`,
+  `dev/calibrate_projection.jl`): in the 2022 runoff the projected share is
+  off by 0.9 points with under 30% counted and the actual winner is favoured
+  from the start, while extrapolating the national total favours the loser
+  until 80% is counted.
 - `live_results` metadata: `cd_cargo` and `dt_eleicao`.
 
 ### Fixed

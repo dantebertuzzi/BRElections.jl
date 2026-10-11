@@ -126,22 +126,30 @@ _normalize(x) = (s = sum(x); s > 0 ? x ./ s : fill(1 / length(x), length(x)))
 """
 Parâmetros da projeção (veja [`projection`](@ref)):
 
-- `prior`: peso, em "seções fictícias", da referência de cada estrato (o 1º
-  turno corrigido, ou o resultado geral) — quanto maior, mais a projeção
+- `prior`: peso, em "seções fictícias", da referência de um estrato quando
+  ela é o resultado geral apurado até aqui — quanto maior, mais a projeção
   confia nela contra o que o estrato já apurou;
+- `prior_previous`: o mesmo, quando a referência é o turno anterior do
+  próprio estrato (bem mais informativa);
 - `observed`: peso do que o estrato já apurou, quando ele está 100% apurado
   (cresce com a fração apurada);
-- `shift`: desvio comum a todos os estratos, em escala logarítmica — o erro
-  que não se cancela entre estados (o eleitorado que falta é diferente do já
-  apurado em todo lugar ao mesmo tempo).
+- `shift`, `shift_previous`: desvio comum a todos os estratos, em escala
+  logarítmica — o erro que não se cancela entre estados (o eleitorado que
+  falta é diferente do já apurado em todo lugar ao mesmo tempo). Com o turno
+  anterior, o deslocamento comum já é medido, e sobra menos.
 
-Os valores foram escolhidos para que a faixa de 80% contenha o resultado
-final em cerca de 80% de apurações simuladas a partir do 1º turno de 2026
-por UF — com o Nordeste atrasado e o já apurado de cada UF enviesado em
-alguns pontos (capitais primeiro). Nesses cenários, a projeção por UF erra
-em média metade do que erra a extrapolação do total nacional.
+Calibrados em apurações reconstituídas com os dados reais de 2022 por zona
+eleitoral (`dev/calibrate_projection.jl`): zonas reais contadas em ordens
+diferentes (capitais primeiro, por último, ao acaso; Nordeste atrasado ou
+não). Nesses cenários, a faixa de 80% contém o resultado final em 81% a 96%
+das vezes em cada fase da apuração. No 2º turno, com o 1º turno de cada UF, o
+erro médio do resultado projetado é de 0,9 ponto com menos de 30% apurado e
+de 0,1 acima de 80%, e a chance dada ao vencedor real fica acima de 50% desde
+o início; a extrapolação do total nacional erra 4 pontos no começo e aponta o
+perdedor até 80% da apuração. Uma eleição só é pouca base: os valores
+erram para o lado da cautela.
 """
-const PROJECTION_PARAMS = (prior = 20.0, observed = 80.0, shift = 0.12)
+const PROJECTION_PARAMS = (prior = 5.0, prior_previous = 150.0, observed = 160.0, shift = 0.12, shift_previous = 0.08)
 
 """
     projection(df; strata = nothing, previous = nothing, nsims = 4000, rng) -> DataFrame
@@ -211,8 +219,10 @@ function projection(df::AbstractDataFrame;
         apurado = mds[s]["eleitorado_apurado"]
         apurado > 0 && sum(obs[s]) > 0 && return sum(obs[s]) / apurado
         if previous !== nothing
+            # Todos os válidos do turno anterior, não só os dos candidatos de
+            # agora: no 2º turno, os eleitores dos eliminados também votam.
             pmd = metadata(previous[s])
-            pmd["eleitorado_apurado"] > 0 && return sum(prior_votes[s]) / pmd["eleitorado_apurado"]
+            pmd["eleitorado_apurado"] > 0 && return pmd["votos_validos"] / pmd["eleitorado_apurado"]
         end
         overall_rate
     end
@@ -235,12 +245,16 @@ function projection(df::AbstractDataFrame;
             sum(weights) : zeros(n)
         [sum(v) > 0 ? _normalize(p .* exp.(δ)) : national for (p, v) in zip(p1, prior_votes)]
     end
+    # O turno anterior do próprio estrato é uma referência bem melhor que o
+    # resultado geral, e pesa mais (`prior_previous`).
+    κ0 = [prior_votes !== nothing && sum(prior_votes[s]) > 0 ? params.prior_previous : params.prior
+          for s in eachindex(strata)]
+    weight = [sum(obs[s]) > 0 ? params.observed * frac[s] : 0.0 for s in eachindex(strata)]
     center = map(eachindex(strata)) do s
-        w = sum(obs[s]) > 0 ? params.observed * frac[s] : 0.0
-        observed = w > 0 ? _normalize(obs[s]) : ref[s]
-        (params.prior .* ref[s] .+ w .* observed) ./ (params.prior + w)
+        observed = weight[s] > 0 ? _normalize(obs[s]) : ref[s]
+        (κ0[s] .* ref[s] .+ weight[s] .* observed) ./ (κ0[s] + weight[s])
     end
-    concentration = [params.prior + (sum(obs[s]) > 0 ? params.observed * frac[s] : 0.0) for s in eachindex(strata)]
+    concentration = κ0 .+ weight
 
     rule = _rule(df)
     seats = metadata(df, "vagas")
@@ -250,8 +264,11 @@ function projection(df::AbstractDataFrame;
     runoffs = zeros(n)
     total = similar(base)
     draw = zeros(n)
+    # Com o turno anterior, o deslocamento comum já é medido (δ): sobra menos
+    # incerteza comum a todos os estratos.
+    shift = prior_votes === nothing ? params.shift : params.shift_previous
     for k in 1:nsims
-        z = exp.(params.shift .* randn(rng, n))
+        z = exp.(shift .* randn(rng, n))
         total .= base
         for s in eachindex(strata)
             expected[s] > 0 || continue

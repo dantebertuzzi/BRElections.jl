@@ -262,12 +262,16 @@ each state's remaining votes follow that state's profile, weighted by how many
 voters are still uncounted there. In a **runoff**, a state that has counted
 little starts from its own first-round result, shifted by the swing already
 seen in the states that counted more (the transfer of the eliminated
-candidates' votes). The parameters (`BRElections.PROJECTION_PARAMS`) were set
-so that the 80% range holds the final result about 80% of the time in count
-replays built from the 2026 first round; in those replays the state-level
-projection is off by half as much as extrapolating the national total. It is a
-simple, transparent model with no polls: it shows where the count points, not
-what will happen.
+candidates' votes). The parameters (`BRElections.PROJECTION_PARAMS`) were
+calibrated on counts rebuilt from the real 2022 results by electoral zone
+(`dev/calibrate_projection.jl`): real zones counted in different orders
+(capitals first, last, at random; the Northeast late or not). There, the 80%
+range holds the final result 81–96% of the time at every stage; in the runoff,
+using each state's first round, the projected share is off by 0.9 points with
+under 30% counted and 0.1 above 80%, and the actual winner is favoured from
+the start — extrapolating the national total is off by 4 points early on and
+favours the loser until 80% is counted. It is a simple, transparent model
+with no polls: it shows where the count points, not what will happen.
 
 #### Terminal dashboard
 
