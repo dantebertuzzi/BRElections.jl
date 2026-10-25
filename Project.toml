@@ -26,7 +26,7 @@ StringEncodings = "0.3"
 Test = "1"
 Unicode = "1"
 ZipFile = "0.10"
-julia = "1.9"
+julia = "1.10"
 
 [extras]
 StringEncodings = "69024149-9ee7-55f6-a4c4-859efe599b68"

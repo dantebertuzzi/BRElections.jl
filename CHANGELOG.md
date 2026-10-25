@@ -14,6 +14,7 @@ section, polling places with coordinates, CSV.jl 1.x and a faster `filter`.
 
 ### Upgrading from 0.2
 
+- Requires Julia 1.10 (the current LTS); 1.9 is no longer supported.
 - `NR_CEP*` and `NR_TELEFONE*` columns are now `String` (they were integers
   and lost leading zeros). Code that compared them to numbers should compare to
   text.
