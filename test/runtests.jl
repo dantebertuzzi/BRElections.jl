@@ -1153,6 +1153,30 @@ end
                        df = v1, strata = nothing, proj = nothing, error = nothing))
         @test m.df === v2
 
+        # Falhas seguidas espaçam as consultas, até o teto.
+        @test m.failures == 1 && E.wait_interval(m) == 2m.interval
+        E.request!(m); pump!(m)
+        @test m.failures == 2 && E.wait_interval(m) == 4m.interval
+        @test occursin("2 falhas seguidas", screen(m))
+        m.failures = 10
+        @test E.wait_interval(m) == E.BACKOFF_MAX
+
+        # Versão mais antiga (nó defasado da CDN): ignorada, sem mexer no histórico.
+        current[] = v1
+        E.request!(m); pump!(m)
+        @test m.df === v2 && m.failures == 0 && m.error === nothing && length(m.history) == 2
+
+        # Muito tempo sem versão nova no meio da apuração: o horário avisa.
+        @test !occursin("sem versão nova", screen(m))
+        m.last_change = time() - 400
+        @test occursin("sem versão nova há 6 min", screen(m))
+
+        # Uma thread só: a projeção congela a tela, e a barra de status avisa.
+        m.threads = 1
+        @test occursin("julia -t auto", screen(m; w = 180))
+        m.threads = 4
+        @test !occursin("julia -t auto", screen(m; w = 180))
+
         # Trocar a UF pelo teclado: resolve de novo, zera o histórico.
         current[] = v1
         key!(m, 'u'); @test m.input === :uf
@@ -1212,6 +1236,59 @@ end
         @test occursin("C1", screen(m; w = 70, h = 24))
         key!(m, 'q')
         @test m.quit
+
+        # 2º turno com virada: eventos, sino, linha do zero e Δ desde o 1º turno.
+        round1 = fake_live([450, 400, 150])                       # C1 45%, C2 40%
+        at(min) = DateTime(2026, 10, 25, 18, min)
+        versions = [fake_live([500, 450]; nr = [2, 1], eleitorado = 2000, apurado = 1000, at = at(0)),
+                    fake_live([700, 650]; eleitorado = 2000, apurado = 1400, at = at(5)),   # C1 passa à frente
+                    fake_live([950, 800]; eleitorado = 2000, apurado = 1800, at = at(10))]  # 90% das seções
+        final_ = fake_live([1050, 900]; eleitorado = 2000, apurado = 2000, at = at(15))
+        final_.eleito[1] = true
+        push!(versions, final_)
+        served = Ref(1)
+        beeps = Ref(0)
+        mr = E.Dashboard(; target = E.Target(:president, nothing, nothing, nothing),
+                         resolve = t -> (url = "r2", uf = "BR"), fetch = q -> versions[served[]],
+                         prepare = q -> (strata = nothing, previous = [round1], previous_total = round1),
+                         beep = () -> beeps[] += 1)
+        E.request!(mr); pump!(mr)
+        txt = screen(mr)
+        @test occursin("Δ 1º t.", txt) && occursin("+12,6", txt) && occursin("+2,4", txt)   # 52,6 − 40; 47,4 − 45
+        @test occursin("eventos", txt) && occursin("nada a registrar ainda", txt)
+        for k in 2:3
+            served[] = k
+            E.request!(mr); pump!(mr)
+        end
+        texts = [e.text for e in mr.events]
+        @test "C1 passa à frente de C2" in texts && any(startswith("90% das seções"), texts)
+        @test beeps[] == 1                                         # só a virada toca o sino
+        txt = screen(mr)
+        @test occursin("18:05  C1 passa à frente de C2", txt) && occursin("C1 − C2 ao longo", txt)
+        @test occursin('┈', txt)                                   # a diferença trocou de sinal
+        served[] = 4
+        E.request!(mr); pump!(mr)
+        @test mr.events[end].text == "totalização final · C1 eleito" && mr.events[end].kind === :final
+        @test beeps[] == 2
+
+        # Garantia matemática: registrada uma vez; sem sino na primeira projeção.
+        mg = E.Dashboard(; target = E.Target(:president, nothing, nothing, nothing), beep = () -> beeps[] += 1)
+        mg.df = fake_live([900, 100]; eleitorado = 2000, apurado = 1100)
+        sure = DataFrame(nr_candidato = [1, 2], nm_urna_candidato = ["C1", "C2"], garantido = [:elected, :open])
+        E.clinched_events!(mg, mg.df, sure; loud = false)
+        E.clinched_events!(mg, mg.df, sure)
+        @test [e.text for e in mg.events] == ["C1 matematicamente eleito"] && beeps[] == 2
+
+        # Término pelo ritmo de cada estrato: o do último que ainda pesa.
+        t1 = at(5)
+        ms = E.Dashboard(; target = E.Target(:president, nothing, nothing, nothing))
+        ms.strata_history = [(at(0), Dict("A" => (500, 1000), "B" => (100, 1000), "C" => (0, 5))),
+                             (t1, Dict("A" => (900, 1000), "B" => (150, 1000), "C" => (0, 5)))]
+        s = E.strata_eta(ms)                    # B: 850 a 10/min; C pesa < 1% do que falta
+        @test s.eta == t1 + Minute(85) && !s.lower
+        ms.strata_history[2][2]["B"] = (100, 1000)                 # B parada: só limite inferior
+        s = E.strata_eta(ms)
+        @test s.eta == t1 + Second(75) && s.lower
     end
 
     @testset "Divulgação de Resultados — ETag, novas tentativas e 404 (servidor local)" begin

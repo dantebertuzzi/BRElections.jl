@@ -7,6 +7,7 @@
 #   julia -t auto examples/live_dashboard.jl governador sp
 #   julia -t auto examples/live_dashboard.jl prefeito pe recife
 #   julia -t auto examples/live_dashboard.jl senador pe --interval 30
+#   julia -t auto examples/live_dashboard.jl --sino                  # toca o sino na virada e na decisão
 #   julia -t auto examples/live_dashboard.jl --eleicao 6258          # uma eleição específica (ex.: 2º turno de 2026)
 #
 # O Tachikoma não é dependência do pacote. Se ele não estiver no seu ambiente,
@@ -40,6 +41,7 @@ const CARGOS = Dict(
 function main(args)
     pos = String[]
     demo = false
+    bell = false
     interval = 10
     election = nothing
     i = 1
@@ -47,6 +49,8 @@ function main(args)
         a = args[i]
         if a == "--demo"
             demo = true
+        elseif a == "--sino"
+            bell = true
         elseif a == "--interval"
             interval = parse(Int, args[i += 1])
         elseif a == "--eleicao"
@@ -62,7 +66,7 @@ function main(args)
     Threads.nthreads() == 1 &&
         @warn "Rode com threads (julia -t auto): a projeção é calculada em segundo plano."
     live_dashboard(CARGOS[nome]; uf = get(pos, 2, nothing), municipality = get(pos, 3, nothing),
-                   election, interval, demo)
+                   election, interval, demo, bell)
 end
 
 try

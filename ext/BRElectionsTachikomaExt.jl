@@ -36,6 +36,14 @@ struct Snapshot
     votos::Int            # votos apurados até aqui
     secoes::Int           # seções totalizadas
     total_secoes::Int
+    shares::Dict{Int,Float64}   # nr_candidato => % dos válidos
+end
+
+# Um acontecimento da apuração, para o registro de eventos.
+struct Event
+    at::DateTime          # horário da versão do TSE em que aconteceu
+    text::String
+    kind::Symbol          # :info, :lead (virada), :decided (garantia matemática) ou :final
 end
 
 # Quanto tempo (em quadros) os votos de um candidato ficam realçados depois de mudar.
@@ -51,6 +59,11 @@ const ANIM_KEYS = ("secoes_totalizadas", "pc_secoes_totalizadas", "eleitorado_ap
 # Janela usada para o ritmo da apuração.
 const PACE_WINDOW = Minute(10)
 const NSIMS = 2000
+# Sem versão nova do TSE por tanto tempo, no meio da apuração, o horário avisa.
+const STALE_NOTICE = 120.0
+const STALE_WARNING = 300.0
+# Falhas seguidas espaçam as consultas (dobrando), até este teto.
+const BACKOFF_MAX = 60.0
 const VBARS = collect("▁▂▃▄▅▆▇")
 const REGION_ORDER = ("Norte", "Nordeste", "Centro-Oeste", "Sudeste", "Sul", "Exterior")
 
@@ -78,10 +91,18 @@ const PALETTE = [ColorRGB(0x5f, 0xaf, 0xff), ColorRGB(0xff, 0x87, 0x5f), ColorRG
     proj_df::Union{Nothing,DataFrame} = nothing    # a versão dos dados que a projeção usou
     projecting::Bool = false
     history::Vector{Snapshot} = Snapshot[]
+    # Apurado e eleitorado de cada estrato, a cada versão projetada: o ritmo por estrato.
+    strata_history::Vector{Tuple{DateTime,Dict{String,Tuple{Int,Int}}}} = Tuple{DateTime,Dict{String,Tuple{Int,Int}}}[]
+    events::Vector{Event} = Event[]
+    announced::Set{Tuple{Int,Symbol}} = Set{Tuple{Int,Symbol}}()   # garantias já registradas
+    beep::Function = () -> nothing             # chamado na virada, na decisão e no fim
     error::Union{Nothing,String} = nothing
     loading::Bool = false
     generation::Int = 0
     last_fetch::Float64 = 0.0                  # `time()` da última resposta
+    last_change::Float64 = 0.0                 # `time()` da última versão nova
+    failures::Int = 0                          # consultas seguidas que falharam
+    threads::Int = Threads.nthreads()
     scroll::Int = 0
     input::Union{Nothing,Symbol} = nothing     # :uf ou :municipality enquanto digita
     pending::Union{Nothing,Target} = nothing   # alvo escolhido que ainda espera UF/município
@@ -98,7 +119,8 @@ end
 should_quit(m::Dashboard) = m.quit
 task_queue(m::Dashboard) = m.tq
 
-_final(m::Dashboard) = m.df !== nothing && metadata(m.df, "totalizacao_final")
+is_final(df) = df !== nothing && metadata(df, "totalizacao_final")
+_final(m::Dashboard) = is_final(m.df)
 
 function init!(m::Dashboard, ::Tachikoma.Terminal)
     m.timer = spawn_timer!(m.tq, :clock, 1.0; repeat = true)
@@ -107,9 +129,12 @@ end
 
 cleanup!(m::Dashboard) = (m.timer === nothing || cancel!(m.timer); nothing)
 
-function dashboard(office; uf, municipality, election, interval, demo = false)
+ring() = (write(stdout, '\a'); flush(stdout); nothing)
+
+function dashboard(office; uf, municipality, election, interval, demo = false, bell = false)
     target = Target(office, uf === nothing ? nothing : uppercase(strip(uf)), municipality, election)
     m = demo ? demo_dashboard() : Dashboard(; target, interval)
+    bell && (m.beep = ring)
     app(m; fps = FPS)
     nothing
 end
@@ -297,13 +322,22 @@ end
 function receive_projection!(m::Dashboard, r)
     m.projecting = false
     if r.target == m.target
+        first_ = m.proj === nothing
         m.setup, m.strata, m.proj, m.proj_df = r.setup, r.strata, r.proj, r.df
+        at = metadata(r.df, "atualizado_em")
         # A chance do líder entra no ponto da evolução da versão projetada.
-        if r.proj !== nothing && !isempty(m.history) && m.history[end].at == metadata(r.df, "atualizado_em")
+        if r.proj !== nothing && !isempty(m.history) && m.history[end].at == at
             h = m.history[end]
             m.history[end] = Snapshot(h.at, h.pc_secoes, h.gap, snapshot(r.df, r.proj).chance,
-                                      h.votos, h.secoes, h.total_secoes)
+                                      h.votos, h.secoes, h.total_secoes, h.shares)
         end
+        if r.strata !== nothing && (isempty(m.strata_history) || m.strata_history[end][1] != at)
+            push!(m.strata_history, (at, Dict(String(metadata(s, "abrangencia")) =>
+                                              (metadata(s, "eleitorado_apurado"), metadata(s, "eleitorado"))
+                                              for s in r.strata)))
+        end
+        # Ao abrir o painel com a eleição já decidida, registra sem tocar o sino.
+        r.proj === nothing || clinched_events!(m, r.df, r.proj; loud = !first_)
     end
     project!(m)                                   # dados mais novos chegaram enquanto isso?
 end
@@ -330,12 +364,20 @@ function receive!(m::Dashboard, r)
         # Alvo inválido (UF sem o cargo, município ambíguo...) ou falha de rede:
         # mostra o erro e mantém o que estava na tela.
         m.error = _message(r.error)
+        m.failures += 1
         return
     end
     m.error = nothing
+    m.failures = 0
+    # Nós da CDN do TSE às vezes servem uma versão já superada: fica a da tela.
+    r.target == m.target && m.df !== nothing &&
+        metadata(r.df, "atualizado_em") < metadata(m.df, "atualizado_em") && return
     if r.target != m.target
         m.target = r.target
         m.history = Snapshot[]
+        empty!(m.strata_history)
+        empty!(m.events)
+        empty!(m.announced)
         m.df = m.proj = m.proj_df = m.strata = m.setup = nothing
         m.scroll = 0
         empty!(m.flash)
@@ -344,6 +386,7 @@ function receive!(m::Dashboard, r)
     old = m.df
     df = r.df
     if old === nothing || metadata(df, "atualizado_em") != metadata(old, "atualizado_em")
+        m.last_change = time()
         push!(m.history, snapshot(df))
         if old !== nothing
             # O odômetro parte do que está na tela (pode ser o meio de outra animação).
@@ -356,6 +399,7 @@ function receive!(m::Dashboard, r)
             for c in eachrow(df)
                 get(before, c.nr_candidato, c.qt_votos) == c.qt_votos || (m.flash[c.nr_candidato] = m.tick)
             end
+            count_events!(m, old, df)
         end
     end
     for nr in df.nr_candidato
@@ -370,7 +414,54 @@ snapshot(df, proj = nothing) =
     Snapshot(metadata(df, "atualizado_em"), metadata(df, "pc_secoes_totalizadas"),
              nrow(df) < 2 ? NaN : df.pc_votos[1] - df.pc_votos[2],
              proj === nothing || nrow(proj) == 0 || ismissing(proj.p_vitoria[1]) ? NaN : proj.p_vitoria[1],
-             metadata(df, "votos"), metadata(df, "secoes_totalizadas"), metadata(df, "secoes"))
+             metadata(df, "votos"), metadata(df, "secoes_totalizadas"), metadata(df, "secoes"),
+             Dict(zip(df.nr_candidato, Float64.(df.pc_votos))))
+
+# --- Registro de eventos ---------------------------------------------------------
+
+function log!(m::Dashboard, at, text, kind; loud = kind !== :info)
+    push!(m.events, Event(at, text, kind))
+    loud && m.beep()
+    nothing
+end
+
+# O que mudou de uma versão do TSE para a seguinte.
+function count_events!(m::Dashboard, old, df)
+    at = metadata(df, "atualizado_em")
+    nothing_counted(old) && !nothing_counted(df) && log!(m, at, "primeiros votos apurados", :info)
+    for t in (50, 90)
+        metadata(old, "pc_secoes_totalizadas") < t <= metadata(df, "pc_secoes_totalizadas") && nrow(df) >= 1 &&
+            log!(m, at, "$t% das seções · $(df.nm_urna_candidato[1]) lidera com " *
+                        fmtpct(df.pc_votos[1]; digits = 1), :info)
+    end
+    if nrow(df) >= 2 && nrow(old) >= 1 && !nothing_counted(old) && df.qt_votos[1] > df.qt_votos[2] &&
+       df.nr_candidato[1] != old.nr_candidato[1]
+        log!(m, at, "$(df.nm_urna_candidato[1]) passa à frente de $(old.nm_urna_candidato[1])", :lead)
+    end
+    if !is_final(old) && is_final(df)
+        elected = df.nm_urna_candidato[df.eleito]
+        runoff = [c.nm_urna_candidato for c in eachrow(df) if occursin("2º turno", coalesce(c.ds_situacao, ""))]
+        tail = !isempty(elected) ? " · " * join(elected, ", ") * (length(elected) == 1 ? " eleito" : " eleitos") :
+               length(runoff) == 2 ? " · 2º turno: " * join(runoff, " × ") : ""
+        log!(m, at, "totalização final" * tail, :final)
+    end
+end
+
+# Garantias matemáticas novas da projeção (antes de o TSE declarar a situação).
+function clinched_events!(m::Dashboard, df, proj; loud = true)
+    (is_final(df) || nothing_counted(df)) && return
+    at = metadata(df, "atualizado_em")
+    runoff = String[]
+    for c in eachrow(proj)
+        key = (c.nr_candidato, c.garantido)
+        (c.garantido === :open || key in m.announced) && continue
+        push!(m.announced, key)
+        c.garantido === :elected ? log!(m, at, "$(c.nm_urna_candidato) matematicamente eleito", :decided; loud) :
+                                   push!(runoff, c.nm_urna_candidato)
+    end
+    isempty(runoff) || log!(m, at, length(runoff) == 1 ? "$(runoff[1]) garantido no 2º turno" :
+                                   "2º turno garantido: " * join(runoff, " × "), :decided; loud)
+end
 
 # O resultado como deve aparecer neste quadro: durante o odômetro, os números
 # interpolados entre a versão anterior e a atual; depois, a atual.
@@ -404,7 +495,51 @@ function pace(m::Dashboard)
     sections = (last_.secoes - first_.secoes) / minutes
     left = last_.total_secoes - last_.secoes
     eta = sections > 0 && left > 0 ? last_.at + Second(round(Int, 60 * left / sections)) : nothing
-    (votes = votes, sections = sections, eta = eta)
+    # Com estratos, o término é o do último que ainda pesa, no ritmo de cada um.
+    s = strata_eta(m)
+    lower = false
+    if s !== nothing
+        eta = s.lower ? (eta === nothing ? nothing : max(eta, s.eta)) : s.eta
+        lower = s.lower
+    end
+    (votes = votes, sections = sections, eta = eta, lower = lower)
+end
+
+# A apuração anda em curva em S, e a soma esconde a cauda: as UFs (ou os
+# municípios) que começam tarde ainda estão no meio quando as outras acabam.
+# Cada estrato que ainda tem ao menos 1% do que falta termina no seu ritmo, e
+# o término é o do último. Um desses que não andou na janela deixa só um
+# limite inferior (`lower`).
+function strata_eta(m::Dashboard)
+    h = m.strata_history
+    length(h) < 2 && return nothing
+    t1, now_ = h[end]
+    window = filter(e -> e[1] >= t1 - PACE_WINDOW, h)
+    t0, then = length(window) >= 2 ? window[1] : h[end-1]
+    minutes = Dates.value(t1 - t0) / 60_000
+    minutes > 0 || return nothing
+    total_left = sum(max(e - a, 0) for (a, e) in values(now_); init = 0)
+    total_left > 0 || return nothing
+    eta, stalled = t1, false
+    for (name, (a, e)) in now_
+        left = max(e - a, 0)
+        left >= 0.01 * total_left || continue
+        rate = (a - get(then, name, (a, e))[1]) / minutes
+        rate > 0 ? (eta = max(eta, t1 + Second(round(Int, 60 * left / rate)))) : (stalled = true)
+    end
+    (eta = eta, lower = stalled)
+end
+
+# Intervalo até a próxima consulta: o configurado, dobrando a cada falha seguida.
+wait_interval(m::Dashboard) =
+    m.failures == 0 ? m.interval : min(m.interval * 2.0^m.failures, max(m.interval, BACKOFF_MAX))
+
+# Segundos sem versão nova, se isso merece aviso: só no meio da apuração
+# (antes do primeiro voto e depois da totalização final, nada muda mesmo).
+function stale_for(m::Dashboard)
+    (m.df === nothing || _final(m) || nothing_counted(m.df) || m.last_change == 0) && return nothing
+    age = time() - m.last_change
+    age >= STALE_NOTICE ? age : nothing
 end
 
 fmtqty(x) = x >= 1e6 ? fmtpct(x / 1e6; digits = 1, suffix = " mi") :
@@ -419,7 +554,7 @@ function update!(m::Dashboard, evt::TaskEvent)
         receive_projection!(m, evt.value)
     elseif evt.id === :clock
         # Depois da totalização final os números não mudam mais: só sob `r`.
-        !m.loading && !_final(m) && time() - m.last_fetch >= m.interval && request!(m)
+        !m.loading && !_final(m) && time() - m.last_fetch >= wait_interval(m) && request!(m)
     end
 end
 
@@ -600,13 +735,39 @@ end
 
 function draw_count!(m::Dashboard, buf, area)
     body = split_layout(Layout(Horizontal, [Fill(), Fixed(40)]), area)
-    draw_candidates!(m, buf, body[1])
+    # Os eventos ficam com o que a lista de candidatos não usa (num 2º turno,
+    # quase tudo); com uma lista longa, com uma faixa no pé.
+    n, h = nrow(m.df), body[1].height
+    left = h - (n + 3) >= 5 ? split_layout(Layout(Vertical, [Fixed(n + 3), Fill()]), body[1]) :
+           h >= 16 ? split_layout(Layout(Vertical, [Fill(), Fixed(6)]), body[1]) : [body[1]]
+    draw_candidates!(m, buf, left[1])
+    length(left) > 1 && draw_events!(m, buf, left[2])
     side = m.strata === nothing ?
         split_layout(Layout(Vertical, [Fixed(9), Fill()]), body[2]) :
         split_layout(Layout(Vertical, [Fixed(9), Fixed(9), Fill()]), body[2])
     draw_turnout!(m, buf, side[1])
     m.strata === nothing || draw_regions!(m, buf, side[2])
     draw_history!(m, buf, side[end])
+end
+
+function draw_events!(m::Dashboard, buf, area)
+    inner = render(Block(; title = " eventos ", title_style = tstyle(:title),
+                         title_right = m.beep === ring ? " sino ligado " : "", title_right_style = tstyle(:text_dim)),
+                   area, buf)
+    inner.height < 1 && return
+    x, r = inner.x + 1, right(inner) - 1
+    if isempty(m.events)
+        set_string!(buf, x, inner.y, "nada a registrar ainda", tstyle(:text_dim); max_x = r)
+        return
+    end
+    styles = Dict(:lead => tstyle(:warning; bold = true), :decided => tstyle(:success; bold = true),
+                  :final => tstyle(:success), :info => tstyle(:text))
+    for (k, e) in enumerate(Iterators.reverse(m.events))          # o mais recente em cima
+        y = inner.y + k - 1
+        y > bottom(inner) && break
+        xx = set_string!(buf, x, y, Dates.format(e.at, "HH:MM") * "  ", tstyle(:text_dim); max_x = r)
+        set_string!(buf, xx, y, clip(e.text, r - xx + 1), styles[e.kind]; max_x = r)
+    end
 end
 
 spinner(m) = SPINNER_BRAILLE[mod1(m.tick ÷ 2, length(SPINNER_BRAILLE))]
@@ -616,8 +777,11 @@ function draw_header!(m::Dashboard, buf, area)
     title = df === nothing ? " BRElections · apuração " : " $(metadata(df, "eleicao")) "
     stamp = df === nothing ? "" :
         " atualizado pelo TSE em $(Dates.format(metadata(df, "atualizado_em"), "dd/mm HH:MM:SS")) "
+    age = stale_for(m)
+    age === nothing || (stamp *= "· sem versão nova há $(floor(Int, age / 60)) min ")
     inner = render(Block(; title, title_right = stamp, title_style = tstyle(:title; bold = true),
-                         title_right_style = tstyle(:text_dim)), area, buf)
+                         title_right_style = age !== nothing && age >= STALE_WARNING ? tstyle(:warning; bold = true) :
+                                             tstyle(:text_dim)), area, buf)
     inner.height < 1 && return
     x, y, r = inner.x + 1, inner.y, right(inner)
 
@@ -645,14 +809,19 @@ function draw_header!(m::Dashboard, buf, area)
     inner.height < 2 && return
     y += 1
     if m.error !== nothing
-        set_string!(buf, inner.x + 1, y, "⚠ " * m.error, tstyle(:error); max_x = r)
+        xx = set_string!(buf, inner.x + 1, y, "⚠ " * m.error, tstyle(:error); max_x = r)
+        if m.failures > 1 && !m.loading && df !== nothing
+            wait = max(0, ceil(Int, wait_interval(m) - (time() - m.last_fetch)))
+            set_string!(buf, xx, y, "  ·  $(m.failures) falhas seguidas, nova tentativa em $(wait)s",
+                        tstyle(:text_dim); max_x = r)
+        end
     elseif m.loading && df === nothing
         set_string!(buf, inner.x + 1, y, "$(spinner(m)) consultando o TSE…", tstyle(:accent); max_x = r)
     elseif _final(m)
         set_string!(buf, inner.x + 1, y, "Resultado final — pressione r para consultar de novo",
                     tstyle(:text_dim); max_x = r)
     else
-        wait = max(0, ceil(Int, m.interval - (time() - m.last_fetch)))
+        wait = max(0, ceil(Int, wait_interval(m) - (time() - m.last_fetch)))
         # Consultas de rotina não trocam a linha: só o indicador gira.
         xx = set_string!(buf, inner.x + 1, y, m.loading ? "$(spinner(m)) consultando" : "nova consulta em $(wait)s",
                          m.loading ? tstyle(:accent) : tstyle(:text_dim); max_x = r)
@@ -662,8 +831,8 @@ function draw_header!(m::Dashboard, buf, area)
             xx = set_string!(buf, xx, y, fmtqty(p.votes) * " votos/min", tstyle(:accent; bold = true); max_x = r)
             xx = set_string!(buf, xx, y, " · " * fmtqty(p.sections) * " seções/min", tstyle(:text); max_x = r)
             p.eta === nothing ||
-                set_string!(buf, xx, y, "  ·  término estimado ~" * Dates.format(p.eta, "HH:MM"),
-                            tstyle(:text_bright); max_x = r)
+                set_string!(buf, xx, y, "  ·  término estimado " * (p.lower ? "não antes de " : "~") *
+                                        Dates.format(p.eta, "HH:MM"), tstyle(:text_bright); max_x = r)
         end
     end
 end
@@ -689,16 +858,29 @@ end
 # Colunas da tabela de candidatos: (chave, largura, título, alinhamento à direita).
 # Nome e barra dividem o que sobra; em terminal estreito, as colunas de
 # `DROP_ORDER` somem nessa ordem.
-const DROP_ORDER = (:sit, :range, :votes, :p2, :nr)
+const DROP_ORDER = (:sit, :range, :delta, :votes, :p2, :nr)
+
+# O resultado final do turno anterior no local todo, se há um (num 2º turno).
+previous_total(m::Dashboard) = m.setup === nothing ? nothing : get(m.setup, :previous_total, nothing)
+
+# % de um candidato num resultado, ou `nothing` se ele não está lá.
+share_in(df, nr) = (i = findfirst(==(nr), df.nr_candidato); i === nothing ? nothing : df.pc_votos[i])
+
+# Ainda pode haver um 2º turno depois deste? Com dois candidatos (um 2º turno,
+# ou um 1º com só dois), quem vence leva: a chance é uma só.
+runoff_possible(p) = metadata(p, "regra") == "majority" && nrow(p) > 2
+
+fmtdelta(d) = (d >= 0 ? "+" : "") * fmtpct(d; digits = 1, suffix = "")
 
 function candidate_columns(m::Dashboard, width::Integer)
     live = m.proj !== nothing && !_final(m)
     cols = Tuple{Symbol,Int,String,Bool}[(:rank, 3, "#", true), (:nr, 5, "Nº", true),
                                          (:name, 0, "Candidato", false), (:party, 10, "Partido", false),
                                          (:bar, 0, "", false), (:pct, 8, "%", true), (:votes, 12, "Votos", true)]
+    previous_total(m) === nothing || nothing_counted(m.df) || push!(cols, (:delta, 7, "Δ 1º t.", true))
     if live
         push!(cols, (:proj, 7, "Proj.", true), (:range, 13, "faixa 80%", true))
-        if metadata(m.proj, "regra") == "majority"
+        if runoff_possible(m.proj)
             push!(cols, (:p1, 6, "1º t.", true), (:p2, 6, "2º t.", true))
         else
             push!(cols, (:p1, 6, "Chance", true))
@@ -772,6 +954,10 @@ function draw_candidates!(m::Dashboard, buf, area)
         flashing = m.tick - get(m.flash, c.nr_candidato, typemin(Int) ÷ 2) < FLASH_FRAMES
         put!(:votes, y, fmtint(c.qt_votos), flashing ? tstyle(:accent; bold = true) : tstyle(:text);
              rightalign = true)
+        if haskey(xs, :delta)
+            before = share_in(previous_total(m), c.nr_candidato)
+            before === nothing || put!(:delta, y, fmtdelta(c.pc_votos - before), tstyle(:text_dim); rightalign = true)
+        end
         p = get(proj, c.nr_candidato, nothing)
         if p !== nothing
             put!(:proj, y, fmtpct(p.pc_projetado; digits = 1), Style(; fg = color, bold = true); rightalign = true)
@@ -897,7 +1083,11 @@ function draw_regions!(m::Dashboard, buf, area)
 end
 
 function draw_history!(m::Dashboard, buf, area)
-    inner = render(Block(; title = " 1º − 2º ao longo da apuração ", title_style = tstyle(:title)), area, buf)
+    df = m.df
+    title = nrow(df) >= 2 && !nothing_counted(df) ?
+        " $(clip(df.nm_urna_candidato[1], 11)) − $(clip(df.nm_urna_candidato[2], 11)) ao longo da apuração " :
+        " 1º − 2º ao longo da apuração "
+    inner = render(Block(; title, title_style = tstyle(:title)), area, buf)
     (inner.height < 1 || inner.width < 4) && return
     x, r = inner.x + 1, right(inner) - 1
     h = filter(s -> !isnan(s.gap), m.history)
@@ -933,11 +1123,42 @@ function draw_history!(m::Dashboard, buf, area)
         end
         return
     end
-    # A diferença pode mudar de sinal (virada): o gráfico mostra a tendência
-    # a partir de um pouco abaixo do menor valor visto.
-    gaps = [s.gap for s in h]
+    draw_gap_chart!(m, buf, graph, h)
+end
+
+# A diferença entre os dois primeiros de agora em cada versão, na cor de quem
+# estava na frente. A escala parte de um pouco abaixo do menor valor visto (a
+# tendência fica visível mesmo com o líder sempre o mesmo); se a diferença
+# trocou de sinal (virada), a linha do zero marca onde.
+function draw_gap_chart!(m::Dashboard, buf, graph, h)
+    a, b = m.df.nr_candidato[1], m.df.nr_candidato[2]
+    gaps = [get(s.shares, a, 0.0) - get(s.shares, b, 0.0) for s in h]
+    gaps = gaps[max(1, end - graph.width + 1):end]
     lo, hi = extrema(gaps)
-    render(Sparkline(gaps .- (lo - max(0.25 * (hi - lo), 0.01)); style = tstyle(:primary)), graph, buf)
+    base = lo - max(0.25 * (hi - lo), 0.01)
+    span = hi - base
+    ca, cb = get(m.colors, a, PALETTE[1]), get(m.colors, b, PALETTE[2])
+    eighths(v) = round(Int, clamp((v - base) / span, 0, 1) * graph.height * 8)
+    zero_row = lo < 0 < hi ? eighths(0.0) ÷ 8 : nothing
+    for (i, g) in enumerate(gaps)
+        gx = graph.x + i - 1
+        e = eighths(g)
+        style = Style(; fg = g >= 0 ? ca : cb)
+        for row in 0:graph.height-1
+            y = bottom(graph) - row
+            k = clamp(e - 8row, 0, 8)
+            k > 0 && set_char!(buf, gx, y, k == 8 ? '█' : VBARS[min(k, 7)], style)
+        end
+    end
+    zero_row === nothing && return
+    y = bottom(graph) - min(zero_row, graph.height - 1)
+    for (i, g) in enumerate(gaps)
+        # A linha passa por trás das barras que a atravessam.
+        eighths(g) <= 8zero_row && set_char!(buf, graph.x + i - 1, y, '┈', tstyle(:text_dim))
+    end
+    for gx in graph.x+length(gaps):right(graph)
+        set_char!(buf, gx, y, '┈', tstyle(:text_dim))
+    end
 end
 
 function draw_status!(m::Dashboard, buf, area)
@@ -957,7 +1178,11 @@ function draw_status!(m::Dashboard, buf, area)
         [Span(" $what: ", key), Span(m.buffer * "▏", tstyle(:text_bright)),
          Span("   enter confirma · esc cancela", dim)]
     end
-    render(StatusBar(; left, right = [Span("resultados.tse.jus.br ", dim)]), area, buf)
+    # Com uma thread só, a projeção divide a thread com o desenho e congela a tela.
+    right_ = m.threads == 1 ? [Span("⚠ 1 thread: inicie com julia -t auto  ", tstyle(:warning)),
+                               Span("resultados.tse.jus.br ", dim)] :
+                              [Span("resultados.tse.jus.br ", dim)]
+    render(StatusBar(; left, right = right_), area, buf)
 end
 
 # --- Tela de análise ---------------------------------------------------------
@@ -985,7 +1210,7 @@ end
 
 function draw_chances!(m::Dashboard, buf, area, nshow)
     p = m.proj
-    majority = metadata(p, "regra") == "majority"
+    majority = runoff_possible(p)
     inner = render(Block(; title = majority ? " chance: vence no 1º turno · vai ao 2º " : " chance de vitória ",
                          title_style = tstyle(:title)), area, buf)
     (inner.height < 1 || inner.width < 30) && return
@@ -1027,7 +1252,7 @@ function decisive(p, seats)
             return (values = collect(col(p.nr_candidato[1])), cut = 50.0,
                     title = " cenários: % de $(p.nm_urna_candidato[1]) · corte 50% ",
                     above = p.nr_candidato[1], below = n >= 2 ? p.nr_candidato[2] : p.nr_candidato[1],
-                    question = "vence no 1º turno")
+                    question = n >= 3 ? "vence no 1º turno" : "vence")
         end
         a, b = 2, 3                               # a disputa pela vaga no 2º turno
         coalesce(p.p_segundo_turno[3], 0.0) < 0.005 && ((a, b) = (1, 2))
@@ -1126,7 +1351,7 @@ function draw_needs!(m::Dashboard, buf, area)
                 push!(lines, ("Para virar, $(clip(n2, 16)) precisa de $(fmtpct(100q; digits = 1)) dos votos " *
                               "dos dois no que falta (até agora: $(fmtpct(100now_; digits = 1)))", tstyle(:warning; bold = true)))
             end
-            if metadata(p, "regra") == "majority"
+            if runoff_possible(p)
                 need = (0.5 * (V + rest) - v1) / rest
                 msg = need <= 0 ? "$(clip(n1, 16)) já tem maioria dos válidos" :
                       need > 1 ? "$(clip(n1, 16)) não vence no 1º turno" :
@@ -1153,7 +1378,7 @@ function draw_convergence!(m::Dashboard, buf, area)
     x, r = inner.x + 1, right(inner) - 1
     chances = [s.chance for s in m.history if !isnan(s.chance)]
     now_ = p.p_vitoria[1]
-    what = metadata(p, "regra") == "majority" ? "vencer no 1º t." : "vencer"
+    what = runoff_possible(p) ? "vencer no 1º t." : "vencer"
     set_string!(buf, x, inner.y, "$(clip(leader, 16)): $(fmtchance(now_)) de $what", chance_style(now_); max_x = r)
     graph = Rect(x, inner.y + 1, r - x + 1, inner.height - 1)
     graph.height < 1 && return
@@ -1169,7 +1394,10 @@ end
 function draw_states!(m::Dashboard, buf, area)
     uf = by_uf(m)
     inner = render(Block(; title = uf ? " UFs pelo peso do que falta " : " municípios pelo peso do que falta ",
-                         title_style = tstyle(:title)), area, buf)
+                         title_style = tstyle(:title),
+                         title_right = m.setup !== nothing && get(m.setup, :previous, nothing) !== nothing ?
+                             " Δ: $(clip(m.df.nm_urna_candidato[1], 14)) " : "",
+                         title_right_style = tstyle(:text_dim)), area, buf)
     inner.height < 2 && return
     x, r = inner.x + 1, right(inner) - 1
     df = m.df
@@ -1177,10 +1405,15 @@ function draw_states!(m::Dashboard, buf, area)
     names = Dict(zip(df.nr_candidato, df.nm_urna_candidato))
     left(s) = max(metadata(s, "eleitorado") - metadata(s, "eleitorado_apurado"), 0)
     total = max(sum(left, m.strata), 1)
-    rows = sort(m.strata; by = left, rev = true)
-    set_string!(buf, x, inner.y, (uf ? "UF  região       " : "município        ") * "apur.  resta  vantagem",
+    # O turno anterior de cada estrato vem na mesma ordem dos estratos.
+    prev = m.setup === nothing ? nothing : get(m.setup, :previous, nothing)
+    prev = prev !== nothing && length(prev) == length(m.strata) ? prev : nothing
+    order = sortperm(m.strata; by = left, rev = true)
+    set_string!(buf, x, inner.y, (uf ? "UF  região       " : "município        ") * "apur.  resta" *
+                                 (prev === nothing ? "" : "  Δ 1º t.") * "  vantagem",
                 tstyle(:text_dim; bold = true); max_x = r)
-    for (k, s) in enumerate(rows)
+    for (k, i) in enumerate(order)
+        s = m.strata[i]
         y = inner.y + k
         y > bottom(inner) && break
         name = metadata(s, "abrangencia")
@@ -1193,6 +1426,12 @@ function draw_states!(m::Dashboard, buf, area)
                          apur >= 99.95 ? tstyle(:success) : tstyle(:text_bright); max_x = r)
         xx = set_string!(buf, xx, y, lpad(fmtpct(resta; digits = 1), 7),
                          resta >= 8 ? tstyle(:warning; bold = true) : tstyle(:text_dim); max_x = r)
+        if prev !== nothing
+            # Quanto o líder de agora ganhou (ou perdeu) ali desde o turno anterior.
+            now_, before = share_in(s, a), share_in(prev[i], a)
+            cell = now_ === nothing || before === nothing || sum(s.qt_votos) == 0 ? "" : fmtdelta(now_ - before)
+            xx = set_string!(buf, xx, y, lpad(cell, 9), Style(; fg = get(m.colors, a, PALETTE[1])); max_x = r)
+        end
         va = sum(s.qt_votos[s.nr_candidato .== a]; init = 0)
         vb = sum(s.qt_votos[s.nr_candidato .== b]; init = 0)
         valid = sum(s.qt_votos)

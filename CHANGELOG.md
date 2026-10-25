@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `live_dashboard`: a version older than the one on screen (served by a lagging
+  CDN node) is ignored; it used to roll the counters back and add an
+  out-of-order point to the history and the pace.
+- `live_dashboard`: with two candidates (a runoff), the table shows a single
+  `Chance` column and the analysis screen no longer talks about winning "in
+  the 1st round"; the `2º t.` column was always below 1%.
+- `live_dashboard`: the history chart plots the gap between the two current
+  leaders across versions; it used the gap between whoever was 1st and 2nd at
+  each moment, which is never negative, so a lead change did not show.
+
+### Added
+
+- `live_dashboard`: the header says how long it has been without a new TSE
+  version in the middle of the count (highlighted after 5 minutes); repeated
+  failures space out the queries (doubling, up to 60 s) and are counted on
+  screen; the status bar warns when Julia runs on a single thread, which
+  freezes the screen while the projection runs.
+- `live_dashboard`: in a runoff, a `Δ 1º t.` column with each candidate's
+  change since the 1st round, and the same for the leader in each state or
+  municipality on the analysis screen.
+- `live_dashboard`: an event log (first votes, 50% and 90% of the sections,
+  lead changes, candidates mathematically decided, final count) in the space
+  the candidate list leaves free; `bell = true` (`--sino` in the example)
+  rings the terminal bell on lead changes, decisions and the final count.
+- `live_dashboard`: the history chart colors each version by who was ahead and
+  draws the zero line when the lead changed.
+- `live_dashboard`: with strata, the estimated end of the count is that of the
+  last stratum still holding at least 1% of what is left, at its own pace,
+  instead of a straight-line extrapolation of the total; "não antes de" when
+  one of them has not moved in the window.
+
 ## [0.4.0] - 2026-10-11
 
 Election night: a projection of the count with win probabilities and what is
