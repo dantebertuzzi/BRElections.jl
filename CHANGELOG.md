@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-26
+
+The election-night dashboard after the runoff of 25/10: an event log, each
+candidate's change since the 1st round, visible lead changes, a warning when
+the TSE stops publishing, and fixes for stale CDN versions and runoff screens.
+
 ### Fixed
 
 - `live_dashboard`: a version older than the one on screen (served by a lagging
@@ -378,7 +384,8 @@ First public release.
 - Test suite that runs offline by default against synthetic fixtures, with
   network smoke tests against the TSE CDN behind `BRElections_TEST_NETWORK`.
 
-[Unreleased]: https://github.com/dantebertuzzi/BRElections.jl/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/dantebertuzzi/BRElections.jl/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/dantebertuzzi/BRElections.jl/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/dantebertuzzi/BRElections.jl/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/dantebertuzzi/BRElections.jl/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/dantebertuzzi/BRElections.jl/compare/v0.1.1...v0.2.0
