@@ -304,7 +304,7 @@ end
 
 """
     live_dashboard(office = :president; uf = nothing, municipality = nothing,
-                   election = nothing, interval = 10, demo = false)
+                   election = nothing, interval = 10, demo = false, bell = false)
 
 Dashboard no terminal para acompanhar a apuração ao vivo, com os dados de
 [`live_results`](@ref) e a tendência de [`projection`](@ref). Duas telas,
@@ -315,13 +315,18 @@ alternadas com `Tab`:
   quem já está **matematicamente eleito** ou garantido no 2º turno
   ([`clinched`](@ref)); seções totalizadas, comparecimento, válidos,
   brancos, nulos e quanto falta apurar; o andamento por região (quanto já
-  foi apurado e quanto do que falta no país está lá); e a diferença entre o
-  1º e o 2º ao longo da apuração, com a diferença projetada.
+  foi apurado e quanto do que falta no país está lá); a diferença entre os
+  dois primeiros ao longo da apuração, com a diferença projetada (se houve
+  virada, a linha do zero marca onde); num 2º turno, quanto cada candidato
+  ganhou desde o 1º (`Δ 1º t.`); e um registro de eventos: primeiros votos,
+  metade e 90% das seções, viradas, quem fica matematicamente decidido e a
+  totalização final.
 - **Análise** — chance de cada candidato; a distribuição dos cenários
   simulados contra o corte que decide a eleição (50% dos válidos, ou a
   última vaga); de quanto do que falta cada um precisa para virar ou vencer
   no 1º turno; a chance do líder ao longo da apuração; e as UFs ordenadas
-  pelo peso do que falta apurar nelas.
+  pelo peso do que falta apurar nelas, com quanto o líder ganhou em cada uma
+  desde o 1º turno.
 
 Na eleição presidencial do Brasil todo, a tendência é calculada por UF; num
 cargo disputado numa UF (Governador, Senador), por município. Num 2º turno,
@@ -336,7 +341,11 @@ chegam (com até cerca de um minuto de cache no CDN). O painel consulta a cada
 chega, os contadores rolam até os números novos (efeito odômetro) em vez de
 saltar — sem nunca passar do último número publicado. O cabeçalho mostra o
 ritmo da apuração (votos e seções por minuto) e o horário estimado de
-término nesse ritmo.
+término: com estratos, o do último que ainda pesa, no ritmo de cada um (a
+apuração anda em curva em S, e a soma esconde a cauda); "não antes de"
+quando algum estrato que pesa ainda não andou. Sem versão nova por alguns
+minutos no meio da apuração, o horário avisa; falhas seguidas espaçam as
+consultas.
 
 Precisa do [Tachikoma.jl](https://github.com/kahliburke/Tachikoma.jl), que
 não é dependência do pacote: carregue-o antes (`using Tachikoma`).
@@ -344,6 +353,8 @@ não é dependência do pacote: carregue-o antes (`using Tachikoma`).
 Os argumentos são os de [`live_results`](@ref); `interval` é o intervalo, em
 segundos, entre as consultas ao TSE (no mínimo 5). Depois da totalização
 final, o painel deixa de consultar sozinho — `r` ainda força uma consulta.
+Com `bell = true`, o terminal toca o sino numa virada, quando alguém fica
+matematicamente decidido e na totalização final.
 
 **Demonstração.** Com `demo = true`, o painel reconstitui a apuração da
 eleição presidencial mais recente a partir do resultado final real por UF,
@@ -378,11 +389,11 @@ function live_dashboard(office::Union{Symbol,Integer} = :president;
                         uf::Union{Nothing,AbstractString} = nothing,
                         municipality::Union{Nothing,Integer,AbstractString} = nothing,
                         election::Union{Nothing,Integer,AbstractString} = nothing,
-                        interval::Real = 10, demo::Bool = false)
+                        interval::Real = 10, demo::Bool = false, bell::Bool = false)
     _office_code(office)                  # erro de uso antes de abrir o painel
     ext = Base.get_extension(@__MODULE__, :BRElectionsTachikomaExt)
     ext === nothing && error("`live_dashboard` precisa do Tachikoma.jl. Carregue-o antes:\n" *
                              "  using Tachikoma\n" *
                              "Se não estiver instalado: using Pkg; Pkg.add(\"Tachikoma\")")
-    ext.dashboard(office; uf, municipality, election, interval = max(Float64(interval), 5.0), demo)
+    ext.dashboard(office; uf, municipality, election, interval = max(Float64(interval), 5.0), demo, bell)
 end
